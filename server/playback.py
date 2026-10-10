@@ -23,6 +23,7 @@ from typing import Any, Awaitable, Callable
 from pydantic import ValidationError
 
 from analytics.analyzer import MatchAnalyzer
+from analytics.graphics import GraphicsDirector
 from broadcast.models import ViewerProfile
 from broadcast.relevance import wants_commentary, wants_recap
 from touchline.pitch import to_display
@@ -48,6 +49,7 @@ class Playback:
         self.speed = speed
         self.playing = autoplay
         self.analyzer = MatchAnalyzer()
+        self.director = GraphicsDirector(events[0])
         self.idx = 0
         self.base_ts = 0  # match ms at the last (re)base
         self.base_wall = time.monotonic()
@@ -109,9 +111,13 @@ class Playback:
         """Rebuild the state up to `target_ms` instantly, then carry on live from there."""
         self.cancel_ai()  # commentary for moments we jumped away from is no longer wanted
         self.analyzer = MatchAnalyzer()
+        self.director = GraphicsDirector(self.events[0])
         self.idx = 0
         while self.idx < len(self.events) and (self.idx == 0 or self.events[self.idx]["ts_ms"] <= target_ms):
-            self.analyzer.process(self.events[self.idx])
+            ev = self.events[self.idx]
+            self.analyzer.process(ev)
+            if ev["type"] != "match_start":
+                self.director.on_event(ev)  # keep score/holder in sync, cues not sent
             self.idx += 1
         self._rebase(target_ms)
         last = self.events[self.idx - 1]
@@ -132,9 +138,13 @@ class Playback:
     async def _emit(self, ev: dict) -> None:
         moments = self.analyzer.process(ev)
         await self.send({"type": "event", "event": self._with_display(ev)})
+        for cue in self.director.on_event(ev):
+            await self.send({"type": "cue", "cue": cue})
         for m in moments:
             moment = m.to_dict()
             await self.send({"type": "moment", "moment": moment})
+            for cue in self.director.on_moment(moment, ev):
+                await self.send({"type": "cue", "cue": cue})
             self._maybe_commentate(moment)
         now = time.monotonic()
         if moments or now - self.last_state >= STATE_INTERVAL_S or ev["type"] == "match_end":
@@ -211,6 +221,10 @@ class Playback:
             return
         await self.send({"type": "commentary", "moment": {k: moment[k] for k in ("id", "type", "clock", "title", "importance")},
                          "coverage": coverage})
+        now = {"ts_ms": int(self.match_ts()), "clock": self.events[max(self.idx - 1, 0)].get("clock", moment["clock"])}
+        cue = self.director.lower_third(now, moment, coverage["caption"], coverage["line"], coverage["source"],
+                                        coverage["language"], coverage["profile_key"])
+        await self.send({"type": "cue", "cue": cue})
 
     async def _recap(self, moment: dict, snapshot: dict, players: dict, profile: ViewerProfile) -> None:
         try:

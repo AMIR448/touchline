@@ -110,3 +110,45 @@ def test_profile_command(client):
         assert ws.receive_json()["type"] == "error"
         ws.send_json({"cmd": "profile", "language": "he"})  # not a supported language
         assert ws.receive_json()["type"] == "error"
+
+
+def test_app_pages(client):
+    r = client.get("/")
+    assert r.status_code == 200 and "app.js" in r.text and r.headers["cache-control"] == "no-cache"
+    assert client.get("/dev").status_code == 200
+    assert client.get("/static/app/app.js").status_code == 200
+    assert client.get("/static/vendor/preact.module.js").status_code == 200
+
+
+def test_cues_endpoint(client):
+    match_id = client.get("/api/matches").json()[0]["match_id"]
+    cues = client.get(f"/api/matches/{match_id}/cues").json()
+    types = {c["type"] for c in cues}
+    assert {"player_tag", "stat_badge", "score_bug", "moment_banner", "lower_third"} <= types
+    assert [c["ts_ms"] for c in cues] == sorted(c["ts_ms"] for c in cues)
+    assert all({"cue_id", "type", "ts_ms", "clock", "duration_ms", "priority", "payload"} <= set(c) for c in cues)
+
+
+def test_compare_endpoint(client):
+    match_id = client.get("/api/matches").json()[0]["match_id"]
+    goal = next(m for m in client.get(f"/api/matches/{match_id}/snapshot").json()["moments"] if m["type"] == "goal")
+    r = client.post(f"/api/matches/{match_id}/compare", json={"moment_id": goal["id"]})
+    assert r.status_code == 200
+    body = r.json()
+    assert len(body["profiles"]) == len(body["coverage"]) == 3
+    teams = {p["favorite_team"] for p in body["profiles"]}
+    assert len(teams - {None}) == 2, "default compare shows a fan of each side"
+    assert client.post(f"/api/matches/{match_id}/compare", json={"moment_id": "nope"}).status_code == 404
+
+
+def test_stream_carries_cues(client):
+    match_id = client.get("/api/matches").json()[0]["match_id"]
+    kinds = set()
+    with client.websocket_connect(f"/ws/matches/{match_id}?speed=600") as ws:
+        while True:
+            msg = ws.receive_json()
+            if msg["type"] == "cue":
+                kinds.add(msg["cue"]["type"])
+            if msg["type"] == "end":
+                break
+    assert {"player_tag", "stat_badge", "score_bug", "moment_banner", "lower_third"} <= kinds

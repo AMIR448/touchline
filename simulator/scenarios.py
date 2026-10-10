@@ -44,6 +44,7 @@ def game_state(engine: "MatchEngine", team: int) -> Mods:
 
 
 def standard(engine: "MatchEngine", team: int) -> Mods:
+    """A normal match: no nudges, just each club's own style and quality."""
     return Mods()
 
 

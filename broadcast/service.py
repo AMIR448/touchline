@@ -69,3 +69,15 @@ class BroadcastService:
         async def make():
             return await self.crew.recap(snapshot, moments, players, profile)
         return await self._once(f"recap|{match_id}|{moment['id']}|{profile.key()}", make)
+
+    async def cover_many(self, match_id: str, moment: dict, snapshot: dict, players: dict[str, dict],
+                         profiles: list[ViewerProfile]) -> list[dict]:
+        """Several viewers at once: one Analyst + Commentator pass, then the Producer fans out in parallel."""
+        keys = [f"cover|{match_id}|{moment['id']}|{p.key()}" for p in profiles]
+        missing = [p for p, k in zip(profiles, keys) if k not in self.cache]
+        if missing:
+            async with self.limit:
+                for c in await self.crew.cover(moment, snapshot, players, missing):
+                    self.cache[f"cover|{match_id}|{moment['id']}|{c.profile_key}"] = c.to_dict()
+            self._persist()
+        return [self.cache[k] for k in keys]

@@ -35,7 +35,7 @@ they explain stats the engine computed, and cite the event IDs behind them.
 | 2 | **Stats engine**: possession, pass difficulty, xG, PPDA, momentum, "control vs chaos", key moments | ✅ done |
 | 3 | **Streaming**: live playback over WebSocket with play/pause/speed/seek + dev viewer (Event Hubs at deploy) | ✅ done |
 | 4 | **Agents**: Analyst, Commentator, Fact-checker, Producer, Recap writer (Agent Framework on Foundry) | ✅ done |
-| 5 | **Web app**: pitch, overlays, speed slider, persona / club / player / language controls | ⏳ |
+| 5 | **Web app**: Studio mode (broadcast overlays, graphics cue feed, analyst desk) and Fan mode (personalized feed, compare viewers) | ✅ done |
 | 6 | **Deploy** to Azure Container Apps, public repo, architecture diagram | ⏳ |
 | 7 | **Demo video** (< 2 min) + submission | ⏳ |
 
@@ -96,3 +96,19 @@ touchline serve          # AI commentary appears in the viewer; "behind the scen
 ```
 
 Without a Foundry endpoint the app still runs; viewers see the stats engine's moment titles.
+
+## Step 5: the app
+
+Open http://localhost:8000 after `touchline serve`.
+
+- **Studio mode** (for broadcasters): a broadcast frame with score bug, player tags, threshold badges
+  (shot speed, pass difficulty, long passes), goal banners and AI lower-thirds; a **Graphics out** feed
+  of timed, machine-readable overlay cues for a graphics renderer (`/api/matches/{id}/cues`); an analyst
+  desk with "why it matters", momentum wave, xG race and control-vs-chaos gauge; and **Behind the scenes**,
+  showing each agent's work and every fact-check.
+- **Fan mode** (second screen): pick your club, player, style and language, and get a personalized
+  commentary feed and recaps. **"See it through other fans' eyes"** shows the same moment for an analyst
+  and for a fan of each side, side by side, in parallel.
+- **Generate match**: simulate a new fixture with a scenario (late comeback, red card, high press, …).
+
+All clubs, players and crests are fictional and generated; no third-party trademarks are used.

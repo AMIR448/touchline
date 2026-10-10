@@ -1,11 +1,14 @@
 import pytest
 from fastapi.testclient import TestClient
 
+from broadcast.agents import FakeAgents
+from broadcast.service import BroadcastService
 from server.app import app
 
 
 @pytest.fixture(scope="module")
 def client():
+    app.state.broadcast = BroadcastService(FakeAgents())  # never call real models from tests
     with TestClient(app) as c:  # `with` runs startup, which seeds demo matches
         yield c
 
@@ -35,7 +38,7 @@ def test_create_match_validates_input(client):
 def test_stream_full_match(client):
     """Stream a whole match at max speed: every event arrives once, in order, with display coords."""
     match_id = client.get("/api/matches").json()[0]["match_id"]
-    seen, moments, states = [], 0, 0
+    seen, moments, states, commentary, recaps, ended = [], 0, 0, 0, 0, False
     with client.websocket_connect(f"/ws/matches/{match_id}?speed=600") as ws:
         hello = ws.receive_json()
         assert hello["type"] == "hello" and hello["match_id"]
@@ -47,11 +50,20 @@ def test_stream_full_match(client):
                 moments += 1
             elif msg["type"] == "state":
                 states += 1
+            elif msg["type"] == "commentary":
+                commentary += 1
+                assert msg["coverage"]["line"] and msg["coverage"]["trace"]
+            elif msg["type"] == "recap":
+                recaps += 1
             elif msg["type"] == "end":
+                ended = True
+            if ended and recaps == 2:  # the full-time recap may land just after the final whistle
                 break
     assert [e["seq"] for e in seen] == list(range(2, len(seen) + 2))  # seq 1 (match_start) is sent as hello
     assert seen[-1]["type"] == "match_end"
     assert moments > 10 and states > 0
+    assert commentary > 0, "the AI crew should have covered some moments"
+    assert recaps == 2, "half-time and full-time recaps"
     passes = [e for e in seen if e["type"] == "pass"]
     assert all(0 <= e["display"]["start"][0] <= 105 for e in passes)
 
@@ -83,4 +95,18 @@ def test_pause_and_seek(client):
 
 def test_unknown_match(client):
     with client.websocket_connect("/ws/matches/does-not-exist") as ws:
+        assert ws.receive_json()["type"] == "error"
+
+
+def test_profile_command(client):
+    match_id = client.get("/api/matches").json()[0]["match_id"]
+    with client.websocket_connect(f"/ws/matches/{match_id}?autoplay=false") as ws:
+        ws.receive_json(), ws.receive_json()
+        ws.send_json({"cmd": "profile", "persona": "analyst", "language": "es", "favorite_team": "kestrel"})
+        msg = ws.receive_json()
+        assert msg["type"] == "profile" and msg["profile"]["language"] == "es"
+        ws.receive_json()  # status
+        ws.send_json({"cmd": "profile", "persona": "robot"})
+        assert ws.receive_json()["type"] == "error"
+        ws.send_json({"cmd": "profile", "language": "he"})  # not a supported language
         assert ws.receive_json()["type"] == "error"

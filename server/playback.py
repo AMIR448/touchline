@@ -5,17 +5,29 @@ event's `ts_ms`, the event goes through the stats engine and out to the viewer,
 followed by any key moments it triggered and (at most once a second) the full
 match state. The viewer can pause, change speed, jump to a minute or restart.
 
+When a broadcast service is attached, moments this viewer cares about are sent to the
+AI crew in the background; their tailored commentary (and the half/full-time recap)
+arrives as separate `commentary` / `recap` messages a few seconds later. The game never
+waits for the AI.
+
 Message protocol: see docs/STREAMING.md.
 """
 
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from typing import Any, Awaitable, Callable
 
+from pydantic import ValidationError
+
 from analytics.analyzer import MatchAnalyzer
+from broadcast.models import ViewerProfile
+from broadcast.relevance import wants_commentary, wants_recap
 from touchline.pitch import to_display
+
+log = logging.getLogger("touchline.playback")
 
 Send = Callable[[dict[str, Any]], Awaitable[None]]
 
@@ -24,8 +36,13 @@ MAX_SPEED = 600.0
 
 
 class Playback:
-    def __init__(self, events: list[dict], send: Send, speed: float = 10.0, autoplay: bool = True):
+    def __init__(self, events: list[dict], send: Send, speed: float = 10.0, autoplay: bool = True,
+                 broadcast=None, profile: ViewerProfile | None = None):
         self.events = events
+        self.match_id = events[0]["match_id"]
+        self.broadcast = broadcast  # BroadcastService or None (AI off)
+        self.profile = profile or ViewerProfile()
+        self.ai_tasks: set[asyncio.Task] = set()
         self.send = send
         self.home_id = events[0]["details"]["home"]["id"]
         self.speed = speed
@@ -66,6 +83,13 @@ class Playback:
         elif cmd == "restart":
             await self._seek(0)
             self.playing = True
+        elif cmd == "profile":
+            try:
+                self.profile = ViewerProfile(**{k: v for k, v in msg.items() if k != "cmd"})
+            except ValidationError as e:
+                await self.send({"type": "error", "message": f"bad profile: {e.errors()[0]['msg']}"})
+                return
+            await self.send({"type": "profile", "profile": self.profile.model_dump()})
         else:
             await self.send({"type": "error", "message": f"unknown command: {cmd!r}"})
             return
@@ -83,6 +107,7 @@ class Playback:
 
     async def _seek(self, target_ms: float) -> None:
         """Rebuild the state up to `target_ms` instantly, then carry on live from there."""
+        self.cancel_ai()  # commentary for moments we jumped away from is no longer wanted
         self.analyzer = MatchAnalyzer()
         self.idx = 0
         while self.idx < len(self.events) and (self.idx == 0 or self.events[self.idx]["ts_ms"] <= target_ms):
@@ -108,7 +133,9 @@ class Playback:
         moments = self.analyzer.process(ev)
         await self.send({"type": "event", "event": self._with_display(ev)})
         for m in moments:
-            await self.send({"type": "moment", "moment": m.to_dict()})
+            moment = m.to_dict()
+            await self.send({"type": "moment", "moment": moment})
+            self._maybe_commentate(moment)
         now = time.monotonic()
         if moments or now - self.last_state >= STATE_INTERVAL_S or ev["type"] == "match_end":
             self.last_state = now
@@ -150,3 +177,47 @@ class Playback:
         except asyncio.TimeoutError:
             pass
         self.changed.clear()
+
+    # ------------------------------------------------------------------ AI crew
+
+    def _maybe_commentate(self, moment: dict) -> None:
+        if not self.broadcast:
+            return
+        if wants_commentary(self.profile, moment):
+            self._spawn(self._commentate(moment, self.analyzer.snapshot(), self._players(), self.profile))
+        elif wants_recap(moment):
+            snapshot = self.analyzer.snapshot(max_moments=1000)
+            self._spawn(self._recap(moment, snapshot, self._players(), self.profile))
+
+    def _players(self) -> dict[str, dict]:
+        return {pid: self.analyzer.player(pid) for pid in self.analyzer.players}
+
+    def _spawn(self, coro) -> None:
+        task = asyncio.create_task(coro)
+        self.ai_tasks.add(task)
+        task.add_done_callback(self.ai_tasks.discard)
+
+    def cancel_ai(self) -> None:
+        for task in list(self.ai_tasks):
+            task.cancel()
+
+    async def _commentate(self, moment: dict, snapshot: dict, players: dict, profile: ViewerProfile) -> None:
+        try:
+            coverage = await self.broadcast.cover(self.match_id, moment, snapshot, players, profile)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("commentary failed for %s", moment["id"])
+            return
+        await self.send({"type": "commentary", "moment": {k: moment[k] for k in ("id", "type", "clock", "title", "importance")},
+                         "coverage": coverage})
+
+    async def _recap(self, moment: dict, snapshot: dict, players: dict, profile: ViewerProfile) -> None:
+        try:
+            recap = await self.broadcast.recap(self.match_id, moment, snapshot, snapshot["moments"], players, profile)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("recap failed for %s", moment["id"])
+            return
+        await self.send({"type": "recap", "moment_id": moment["id"], **recap})

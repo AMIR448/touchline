@@ -34,7 +34,7 @@ they explain stats the engine computed, and cite the event IDs behind them.
 | 1 | **Simulator**: fictional clubs + a match engine that emits realistic events | ✅ done |
 | 2 | **Stats engine**: possession, pass difficulty, xG, PPDA, momentum, "control vs chaos", key moments | ✅ done |
 | 3 | **Streaming**: live playback over WebSocket with play/pause/speed/seek + dev viewer (Event Hubs at deploy) | ✅ done |
-| 4 | **Agents**: Tactical, Explainer, Storyteller, Personalizer (Microsoft Foundry + Agent Framework) | ⏳ |
+| 4 | **Agents**: Analyst, Commentator, Fact-checker, Producer, Recap writer (Agent Framework on Foundry) | ✅ done |
 | 5 | **Web app**: pitch, overlays, speed slider, persona / club / player / language controls | ⏳ |
 | 6 | **Deploy** to Azure Container Apps, public repo, architecture diagram | ⏳ |
 | 7 | **Demo video** (< 2 min) + submission | ⏳ |
@@ -81,3 +81,18 @@ A FastAPI server plays matches "live" over WebSocket. Every event goes through t
 engine on the way, so viewers receive events, key moments and match state in sync. Each
 viewer controls their own playback (play/pause, 1x–600x, jump to minute). The page at `/`
 is a dev viewer; the real UI comes in step 5. Protocol: [docs/STREAMING.md](docs/STREAMING.md).
+
+## Step 4: the broadcast crew (AI agents)
+
+Key moments go to a crew of agents built with **Microsoft Agent Framework** on **Microsoft Foundry**:
+an Analyst works out *why* it matters, a Commentator writes the line, a code-based Fact-checker
+verifies every number and name (sending failures back for a rewrite), and a Producer tailors it per
+viewer: analyst or casual fan, favourite club and player, English / Spanish / French / Portuguese.
+Half-time and full-time get a recap. Details and the workflow diagram: [docs/AGENTS.md](docs/AGENTS.md).
+
+```bash
+source scripts/env.sh    # project Azure login + .env (Foundry endpoint)
+touchline serve          # AI commentary appears in the viewer; "behind the scenes" shows each agent
+```
+
+Without a Foundry endpoint the app still runs; viewers see the stats engine's moment titles.

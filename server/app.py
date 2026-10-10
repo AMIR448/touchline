@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import os
 import random
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -27,6 +29,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from analytics.analyzer import MatchAnalyzer
+from broadcast.models import ViewerProfile
+from broadcast.service import BroadcastService
 from simulator.clubs import CLUBS
 from simulator.engine import simulate
 from simulator.scenarios import SCENARIOS
@@ -37,6 +41,17 @@ STATIC = Path(__file__).parent / "static"
 
 # Matches held in memory: match_id -> events. Small enough (~1 MB each) for a demo.
 MATCHES: dict[str, list[dict]] = {}
+log = logging.getLogger("touchline")
+
+
+def _broadcast_service() -> BroadcastService | None:
+    """The AI crew, if configured. Without a Foundry endpoint (or with TOUCHLINE_AI=off) the app
+    still works: viewers just get the stats engine's moment titles instead of AI commentary."""
+    if os.getenv("TOUCHLINE_AI", "on") == "off" or not os.getenv("FOUNDRY_PROJECT_ENDPOINT"):
+        log.warning("AI commentary disabled (set FOUNDRY_PROJECT_ENDPOINT to enable)")
+        return None
+    from broadcast.agents import FoundryAgents
+    return BroadcastService(FoundryAgents(), cache_file=os.getenv("TOUCHLINE_CACHE_FILE", "data/ai-cache.json"))
 
 
 class NewMatch(BaseModel):
@@ -72,6 +87,9 @@ async def lifespan(_app: FastAPI):
                                        ("marlowe", "portellis", 21, "late_comeback"),
                                        ("portellis", "ashvale", 8, "red_card")]:
         _create(NewMatch(home=home, away=away, seed=seed, scenario=scenario))
+    if not hasattr(_app.state, "broadcast"):  # tests may inject their own
+        Path("data").mkdir(exist_ok=True)
+        _app.state.broadcast = _broadcast_service()
     yield
 
 
@@ -80,7 +98,7 @@ app = FastAPI(title="Touchline", version="0.1.0", lifespan=lifespan)
 
 @app.get("/api/health")
 def health() -> dict:
-    return {"ok": True, "matches": len(MATCHES)}
+    return {"ok": True, "matches": len(MATCHES), "ai": app.state.broadcast is not None}
 
 
 @app.get("/api/clubs")
@@ -114,7 +132,9 @@ def snapshot(match_id: str) -> dict:
 
 
 @app.websocket("/ws/matches/{match_id}")
-async def watch(ws: WebSocket, match_id: str, speed: float = 10.0, autoplay: bool = True) -> None:
+async def watch(ws: WebSocket, match_id: str, speed: float = 10.0, autoplay: bool = True,
+                persona: str = "casual", language: str = "en", team: str | None = None,
+                player: str | None = None) -> None:
     await ws.accept()
     if match_id not in MATCHES:
         await ws.send_json({"type": "error", "message": "no such match"})
@@ -124,7 +144,12 @@ async def watch(ws: WebSocket, match_id: str, speed: float = 10.0, autoplay: boo
     async def send(msg: dict) -> None:
         await ws.send_text(json.dumps(msg, ensure_ascii=False))
 
-    playback = Playback(MATCHES[match_id], send, speed=speed, autoplay=autoplay)
+    try:
+        profile = ViewerProfile(persona=persona, language=language, favorite_team=team, favorite_player=player)
+    except ValueError:
+        profile = ViewerProfile()
+    playback = Playback(MATCHES[match_id], send, speed=speed, autoplay=autoplay,
+                        broadcast=app.state.broadcast, profile=profile)
     runner = asyncio.create_task(playback.run())
     try:
         while True:
@@ -138,6 +163,7 @@ async def watch(ws: WebSocket, match_id: str, speed: float = 10.0, autoplay: boo
         pass
     finally:
         runner.cancel()
+        playback.cancel_ai()
 
 
 @app.get("/")

@@ -26,6 +26,7 @@ from .metrics import (BIG_CHANCE_XG, FINAL_THIRD_X, enters_box, enters_final_thi
 ON_BALL = {"pass", "carry", "dribble", "shot"}
 BALL_WINS = {"interception", "ball_recovery", "tackle"}
 HALFWAY = 52.5
+MIN_PPDA_ACTIONS = 5  # PPDA is a ratio: with only 1-2 defensive actions it swings wildly, so wait for data
 PPDA_LINE = 42.0  # defensive actions beyond this line (defender's frame) count as pressing high
 
 # Threat values feeding the momentum model.
@@ -150,6 +151,11 @@ class Chain:
     counter_reported: bool = False
 
 
+def zone(x: float) -> str:
+    """Pitch third in words, from the acting team's point of view."""
+    return "own third" if x < 35 else ("middle third" if x < 70 else "final third")
+
+
 def _pct(a: float, b: float) -> int:
     return round(100 * a / b) if b else 0
 
@@ -258,7 +264,7 @@ class MatchAnalyzer:
             "interceptions": s.interceptions,
             "recoveries": s.recoveries,
             "saves": s.saves,
-            "ppda": round(s.opp_passes_own_60 / s.high_def_actions, 1) if s.high_def_actions else None,
+            "ppda": round(s.opp_passes_own_60 / s.high_def_actions, 1) if s.high_def_actions >= MIN_PPDA_ACTIONS else None,
         }
 
     def _window(self, t: str, minutes: int) -> dict[str, Any]:
@@ -276,7 +282,7 @@ class MatchAnalyzer:
             "shots": sum(b.shots for b in mine),
             "xg": round(sum(b.xg for b in mine), 2),
             "box_entries": sum(b.box_entries for b in mine),
-            "ppda": round(sum(b.opp_passes_own_60 for b in mine) / acts, 1) if acts else None,
+            "ppda": round(sum(b.opp_passes_own_60 for b in mine) / acts, 1) if acts >= MIN_PPDA_ACTIONS else None,
         }
 
     def _player_view(self, p: PlayerStats) -> dict[str, Any]:
@@ -578,7 +584,7 @@ class MatchAnalyzer:
             c.counter_reported = True
             self._moment(
                 "counter_attack", ev, 0.35 + value, f"{self.team_names[t]} break at speed",
-                {"team": self.team_names[t], "won_ball_by": c.start_how, "won_ball_at_x_m": round(c.start_x),
+                {"team": self.team_names[t], "won_ball_by": c.start_how.replace("_", " "), "won_ball_in": zone(c.start_x),
                  "seconds_to_shot": round((ev["ts_ms"] - c.start_ts) / 1000, 1), "passes": c.passes,
                  "shot_xg": round(value, 2), "shot_outcome": ev["outcome"]},
                 c.events[-8:], players=c.players[:5],
@@ -636,7 +642,7 @@ class MatchAnalyzer:
         if c and c.team_id == t and facts["shot_type"] == "open_play":
             facts["build_up"] = {"passes": c.passes, "players_involved": len(c.players),
                                  "duration_s": round((ev["ts_ms"] - c.start_ts) / 1000, 1),
-                                 "started_by": c.start_how, "started_at_x_m": round(c.start_x)}
+                                 "started_by": c.start_how.replace("_", " "), "started_in": zone(c.start_x)}
             evidence = c.events[-10:] + evidence
         self._moment("goal", ev, 0.9 + (0.1 if late and decisive else 0.0),
                      f"GOAL! {p.name} ({self._score_str()})", facts, evidence,

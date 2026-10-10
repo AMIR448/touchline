@@ -36,6 +36,19 @@
   .m .t { color:var(--muted); font-size:12px; font-variant-numeric: tabular-nums; }
   .side { display:flex; flex-direction:column; gap:16px; }
   svg { width:100%; height:60px; display:block; }
+  .overlay .cap { font-size:16px; }
+  .overlay .line { font-weight:400; margin-top:4px; }
+  .overlay .meta { display:flex; gap:10px; align-items:center; margin-top:6px; color:var(--muted); font-size:12px; font-weight:400; }
+  .overlay .meta a { color:var(--accent); cursor:pointer; }
+  .trace { margin-top:8px; font-size:12px; font-weight:400; color:var(--muted); display:none; }
+  .trace.open { display:block; }
+  .trace div { padding:2px 0; } .trace .rej { color:#ff8a80; } .trace .ok { color:#9be7a0; }
+  .m .ai { margin-top:4px; color:var(--text); font-size:13px; }
+  .badge { font-size:11px; padding:1px 6px; border-radius:10px; background:#243; color:#9be7a0; }
+  .badge.fb { background:#332; color:#e7d39b; }
+  label.ctl { color:var(--muted); font-size:12px; display:flex; gap:6px; align-items:center; }
+  #recap { display:none; } #recap.show { display:block; }
+  #recap h3 { margin:4px 0 8px; font-size:17px; } #recap p { margin:6px 0; }
 </style>
 </head>
 <body>
@@ -43,7 +56,11 @@
   <h1>TOUCHLINE <span style="color:var(--muted);font-weight:400">dev viewer</span></h1>
   <select id="match"></select>
   <button id="new">+ New match</button>
-  <span style="color:var(--muted)">Step 3 preview · the real UI comes in step 5</span>
+  <label class="ctl">Viewer <select id="persona"><option value="casual">Casual fan</option><option value="analyst">Analyst</option></select></label>
+  <label class="ctl">Language <select id="lang"><option value="en">English</option><option value="es">Español</option><option value="fr">Français</option><option value="pt">Português</option></select></label>
+  <label class="ctl">My club <select id="team"><option value="">None</option></select></label>
+  <label class="ctl">My player <select id="player"><option value="">None</option></select></label>
+  <span id="ai" style="color:var(--muted);font-size:12px"></span>
 </header>
 <main>
   <section class="panel">
@@ -63,6 +80,7 @@
     <div class="overlay" id="overlay">Waiting for kick-off…</div>
   </section>
   <aside class="side">
+    <div class="panel" id="recap"><h2 id="recapWhen">Recap</h2><div id="recapBody" dir="auto"></div></div>
     <div class="panel"><h2>Momentum (last ~10 min)</h2><svg id="mom" viewBox="0 0 100 40" preserveAspectRatio="none"></svg></div>
     <div class="panel"><h2>Stats</h2><div id="stats"></div></div>
     <div class="panel"><h2>Key moments</h2><div id="moments"></div></div>
@@ -70,6 +88,7 @@
 </main>
 <script>
 const $ = id => document.getElementById(id);
+const esc = t => String(t).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 const cv = $("pitch"), ctx = cv.getContext("2d"), S = 10; // 10 px per metre
 let ws, meta, homeId, names = {}, trail = [], speed = 10, playing = true;
 
@@ -105,8 +124,8 @@ function renderState(st) {
   const [h, a] = [st.match.home.id, st.match.away.id];
   $("hs").textContent = st.match.score[h]; $("as").textContent = st.match.score[a];
   $("stats").innerHTML = STATS.map(([k, l]) => {
-    const hv = st.teams[h][k] ?? 0, av = st.teams[a][k] ?? 0, tot = (+hv + +av) || 1;
-    return `<div class="stat"><span class="lbl">${l}</span><span>${hv}</span><div class="bar"><i style="width:${100 * hv / tot}%"></i></div><span>${av}</span></div>`;
+    const hv = st.teams[h][k] ?? "–", av = st.teams[a][k] ?? "–", tot = ((+hv || 0) + (+av || 0)) || 1;
+    return `<div class="stat"><span class="lbl">${l}</span><span>${hv}</span><div class="bar"><i style="width:${100 * (+hv || 0) / tot}%"></i></div><span>${av}</span></div>`;
   }).join("");
   const tl = st.momentum.timeline;
   if (tl.length) {
@@ -123,9 +142,36 @@ function addMoment(m) {
   const icon = m.type === "card" && m.importance < 0.5 ? "🟨" : (ICON[m.type] || "•");
   const el = document.createElement("div");
   el.className = "m" + (m.importance >= 0.6 ? " hi" : "");
+  el.id = "m-" + m.id;
   el.innerHTML = `<div class="t">${m.clock} · ${m.type.replace(/_/g, " ")}</div>${icon} ${m.title}`;
   $("moments").prepend(el);
-  if (m.importance >= 0.45) $("overlay").innerHTML = `${icon} ${m.title}<small>${m.clock} · facts ready for the agents (step 4)</small>`;
+  const note = ["half_time", "full_time"].includes(m.type) ? "recap coming up…" : "the broadcast crew is on it…";
+  if (m.importance >= 0.45) $("overlay").innerHTML = `<span class="cap">${icon} ${esc(m.title)}</span><small>${m.clock} · ${note}</small>`;
+}
+function traceHtml(trace) {
+  return trace.map(s => {
+    const cls = s.note.startsWith("rejected") || s.note.startsWith("failed") || s.note.startsWith("gave up") ? "rej" : (s.note === "passed" ? "ok" : "");
+    const who = { analyst: "🧠 Analyst", commentator: "🎙 Commentator", fact_checker: "✅ Fact-checker", producer: "🎛 Producer" }[s.agent] || s.agent;
+    return `<div class="${cls}">${who}${s.ms ? ` · ${(s.ms / 1000).toFixed(1)}s` : ""}${s.note ? ` · ${esc(s.note)}` : ""}</div>`;
+  }).join("");
+}
+function onCommentary(msg) {
+  const c = msg.coverage, m = msg.moment;
+  const secs = (c.trace.reduce((a, s) => a + s.ms, 0) / 1000).toFixed(1);
+  const badge = c.source === "ai" ? `<span class="badge">AI · fact-checked</span>` : `<span class="badge fb">safe fallback</span>`;
+  $("overlay").innerHTML = `<div class="cap" dir="auto">${esc(c.caption)}</div><div class="line" dir="auto">${esc(c.line)}</div>
+    <div class="meta">${badge}<span>${m.clock} · ${secs}s</span><a onclick="this.parentNode.nextElementSibling.classList.toggle('open')">behind the scenes ▾</a></div>
+    <div class="trace">${c.insight && c.insight.why_it_matters ? `<div>🧠 <i>${esc(c.insight.why_it_matters)}</i></div>` : ""}${traceHtml(c.trace)}</div>`;
+  const el = document.getElementById("m-" + m.id);
+  if (el) el.insertAdjacentHTML("beforeend", `<div class="ai" dir="auto">🎙 ${esc(c.line)}</div>`);
+}
+function onRecap(msg) {
+  if (!msg.recap) return;
+  const r = msg.recap;
+  $("recapWhen").textContent = msg.when === "full_time" || msg.when === "full-time" ? "Full-time recap" : "Half-time recap";
+  $("recapBody").innerHTML = `<h3>${esc(r.headline)}</h3>${r.summary.map(p => `<p>${esc(p)}</p>`).join("")}
+    <p>⭐ <b>${esc(r.player_of_the_match)}</b>: ${esc(r.player_reason)}</p>`;
+  $("recap").classList.add("show");
 }
 function onEvent(ev) {
   $("clock").textContent = ev.clock;
@@ -138,7 +184,11 @@ function onEvent(ev) {
 function connect(id) {
   if (ws) ws.close();
   trail = []; $("moments").innerHTML = ""; draw();
-  ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/matches/${id}?speed=${speed}`);
+  $("recap").classList.remove("show");
+  const q = new URLSearchParams({ speed, persona: $("persona").value, language: $("lang").value });
+  if ($("team").value) q.set("team", $("team").value);
+  if ($("player").value) q.set("player", $("player").value);
+  ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/matches/${id}?${q}`);
   ws.onmessage = e => {
     const msg = JSON.parse(e.data);
     if (msg.type === "hello") {
@@ -148,8 +198,16 @@ function connect(id) {
       document.documentElement.style.setProperty("--home", meta.home.colors[0]);
       document.documentElement.style.setProperty("--away", meta.away.colors[0]);
       $("seek").max = msg.duration_minutes;
+      const keepTeam = $("team").value, keepPlayer = $("player").value;
+      $("team").innerHTML = `<option value="">None</option>` + [meta.home, meta.away].map(t => `<option value="${t.id}">${t.name}</option>`).join("");
+      $("player").innerHTML = `<option value="">None</option>` + [meta.home, meta.away].map(t =>
+        `<optgroup label="${t.name}">` + [...t.starters, ...t.bench].map(p => `<option value="${p.id}">${p.name}</option>`).join("") + `</optgroup>`).join("");
+      $("team").value = [meta.home.id, meta.away.id].includes(keepTeam) ? keepTeam : "";
+      if ([...$("player").options].some(o => o.value === keepPlayer)) $("player").value = keepPlayer;
     } else if (msg.type === "event") onEvent(msg.event);
     else if (msg.type === "moment") addMoment(msg.moment);
+    else if (msg.type === "commentary") onCommentary(msg);
+    else if (msg.type === "recap") onRecap(msg);
     else if (msg.type === "state") renderState(msg.state);
     else if (msg.type === "reset") {
       trail = []; $("moments").innerHTML = "";
@@ -177,6 +235,10 @@ async function loadMatches(select) {
   connect($("match").value);
 }
 $("match").onchange = () => connect($("match").value);
+const sendProfile = () => send({ cmd: "profile", persona: $("persona").value, language: $("lang").value,
+  favorite_team: $("team").value || null, favorite_player: $("player").value || null });
+["persona", "lang", "team", "player"].forEach(id => $(id).onchange = sendProfile);
+fetch("/api/health").then(r => r.json()).then(h => $("ai").textContent = h.ai ? "🤖 AI crew on" : "AI off (no Foundry endpoint)");
 $("new").onclick = async () => {
   const clubs = ["kestrel", "marlowe", "portellis", "ashvale"].sort(() => Math.random() - .5);
   const scen = ["standard", "late_comeback", "high_press", "dominant_home", "red_card"][Math.floor(Math.random() * 5)];

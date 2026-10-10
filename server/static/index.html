@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Touchline · Dev Viewer</title>
+<style>
+  :root { --bg:#0e1116; --panel:#171b22; --line:#2a303a; --text:#e6e8eb; --muted:#8a93a0;
+          --pitch:#1d5c32; --pitch2:#1a5530; --home:#5BB8F0; --away:#C8102E; --accent:#f2c500; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:14px/1.4 system-ui, -apple-system, sans-serif; }
+  header { display:flex; gap:12px; align-items:center; padding:12px 16px; border-bottom:1px solid var(--line); flex-wrap:wrap; }
+  header h1 { font-size:15px; margin:0 12px 0 0; letter-spacing:.04em; }
+  select, button { background:var(--panel); color:var(--text); border:1px solid var(--line); border-radius:6px; padding:6px 10px; font:inherit; cursor:pointer; }
+  button.on { border-color:var(--accent); color:var(--accent); }
+  main { display:grid; grid-template-columns: minmax(0, 1fr) 360px; gap:16px; padding:16px; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px; }
+  .score { display:flex; align-items:center; justify-content:center; gap:16px; font-size:22px; font-weight:700; margin-bottom:10px; }
+  .score .clock { font-variant-numeric: tabular-nums; background:#000; padding:2px 10px; border-radius:6px; font-size:18px; }
+  .swatch { display:inline-block; width:12px; height:12px; border-radius:3px; margin-right:6px; vertical-align:middle; }
+  canvas { width:100%; height:auto; display:block; border-radius:8px; }
+  .controls { display:flex; gap:8px; align-items:center; margin-top:10px; flex-wrap:wrap; }
+  .controls input[type=range] { flex:1; min-width:160px; }
+  .overlay { min-height:44px; margin-top:10px; padding:10px 12px; border-left:4px solid var(--accent); background:#0b0e12; border-radius:6px; font-weight:600; }
+  .overlay small { display:block; color:var(--muted); font-weight:400; }
+  h2 { font-size:12px; text-transform:uppercase; letter-spacing:.08em; color:var(--muted); margin:0 0 8px; }
+  .stat { display:grid; grid-template-columns: 48px 1fr 48px; gap:8px; align-items:center; margin:5px 0; font-variant-numeric: tabular-nums; }
+  .stat .bar { height:6px; background:var(--away); border-radius:3px; overflow:hidden; position:relative; }
+  .stat .bar i { position:absolute; left:0; top:0; bottom:0; background:var(--home); }
+  .stat .lbl { grid-column: 1 / -1; font-size:11px; color:var(--muted); text-align:center; margin-bottom:-4px; }
+  .stat span:last-child { text-align:right; }
+  #moments { max-height:420px; overflow:auto; display:flex; flex-direction:column; gap:6px; }
+  .m { padding:8px; border-radius:6px; background:#0b0e12; border-left:3px solid var(--line); }
+  .m.hi { border-left-color:var(--accent); }
+  .m .t { color:var(--muted); font-size:12px; font-variant-numeric: tabular-nums; }
+  .side { display:flex; flex-direction:column; gap:16px; }
+  svg { width:100%; height:60px; display:block; }
+</style>
+</head>
+<body>
+<header>
+  <h1>TOUCHLINE <span style="color:var(--muted);font-weight:400">dev viewer</span></h1>
+  <select id="match"></select>
+  <button id="new">+ New match</button>
+  <span style="color:var(--muted)">Step 3 preview · the real UI comes in step 5</span>
+</header>
+<main>
+  <section class="panel">
+    <div class="score">
+      <span><i class="swatch" id="hsw"></i><span id="hname">Home</span></span>
+      <span id="hs">0</span><span class="clock" id="clock">00:00</span><span id="as">0</span>
+      <span><span id="aname">Away</span><i class="swatch" id="asw" style="margin:0 0 0 6px"></i></span>
+    </div>
+    <canvas id="pitch" width="1050" height="680"></canvas>
+    <div class="controls">
+      <button id="play">⏸ Pause</button>
+      <span>Speed</span>
+      <span id="speeds"></span>
+      <input id="seek" type="range" min="0" max="95" value="0" title="jump to minute">
+      <span id="seekv" style="width:40px;color:var(--muted)">0'</span>
+    </div>
+    <div class="overlay" id="overlay">Waiting for kick-off…</div>
+  </section>
+  <aside class="side">
+    <div class="panel"><h2>Momentum (last ~10 min)</h2><svg id="mom" viewBox="0 0 100 40" preserveAspectRatio="none"></svg></div>
+    <div class="panel"><h2>Stats</h2><div id="stats"></div></div>
+    <div class="panel"><h2>Key moments</h2><div id="moments"></div></div>
+  </aside>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const cv = $("pitch"), ctx = cv.getContext("2d"), S = 10; // 10 px per metre
+let ws, meta, homeId, names = {}, trail = [], speed = 10, playing = true;
+
+function drawPitch() {
+  for (let i = 0; i < 10; i++) { ctx.fillStyle = i % 2 ? "#1d5c32" : "#1a5530"; ctx.fillRect(i * 105, 0, 105, 680); }
+  ctx.strokeStyle = "rgba(255,255,255,.7)"; ctx.lineWidth = 2;
+  ctx.strokeRect(5, 5, 1040, 670);
+  ctx.beginPath(); ctx.moveTo(525, 5); ctx.lineTo(525, 675); ctx.stroke();
+  ctx.beginPath(); ctx.arc(525, 340, 91.5, 0, Math.PI * 2); ctx.stroke();
+  for (const x of [5, 1045 - 165]) ctx.strokeRect(x, 340 - 201.6, 165, 403.2);
+  for (const x of [5, 1045 - 55]) ctx.strokeRect(x, 340 - 91.6, 55, 183.2);
+}
+function draw() {
+  drawPitch();
+  trail.forEach((t, i) => {
+    const a = (i + 1) / trail.length;
+    ctx.strokeStyle = t.color; ctx.globalAlpha = a * 0.9; ctx.lineWidth = 3;
+    if (t.end) { ctx.beginPath(); ctx.moveTo(t.start[0] * S, t.start[1] * S); ctx.lineTo(t.end[0] * S, t.end[1] * S); ctx.stroke(); }
+    ctx.globalAlpha = 1;
+  });
+  const last = trail[trail.length - 1];
+  if (last) {
+    const p = last.end || last.start;
+    ctx.fillStyle = "#fff"; ctx.beginPath(); ctx.arc(p[0] * S, p[1] * S, 9, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = last.color; ctx.beginPath(); ctx.arc(last.start[0] * S, last.start[1] * S, 7, 0, Math.PI * 2); ctx.fill();
+  }
+}
+function colorOf(team) { return team === homeId ? meta.home.colors[0] : meta.away.colors[0]; }
+
+const STATS = [["possession_pct", "Possession %"], ["shots", "Shots"], ["on_target", "On target"], ["xg", "xG"],
+  ["pass_accuracy_pct", "Pass accuracy %"], ["box_entries", "Box entries"], ["ppda", "PPDA (lower = more pressing)"], ["corners", "Corners"]];
+function renderState(st) {
+  const [h, a] = [st.match.home.id, st.match.away.id];
+  $("hs").textContent = st.match.score[h]; $("as").textContent = st.match.score[a];
+  $("stats").innerHTML = STATS.map(([k, l]) => {
+    const hv = st.teams[h][k] ?? 0, av = st.teams[a][k] ?? 0, tot = (+hv + +av) || 1;
+    return `<div class="stat"><span class="lbl">${l}</span><span>${hv}</span><div class="bar"><i style="width:${100 * hv / tot}%"></i></div><span>${av}</span></div>`;
+  }).join("");
+  const tl = st.momentum.timeline;
+  if (tl.length) {
+    const pts = tl.map((v, i) => `${(i / Math.max(tl.length - 1, 1)) * 100},${20 - v * 18}`).join(" ");
+    $("mom").innerHTML = `<line x1="0" y1="20" x2="100" y2="20" stroke="#2a303a" stroke-width=".5"/>
+      <polyline points="${pts}" fill="none" stroke="#f2c500" stroke-width="1" vector-effect="non-scaling-stroke"/>`;
+  }
+}
+const ICON = { goal: "⚽", card: "🟥", big_chance_missed: "😱", great_save: "🧤", momentum_swing: "📈", counter_attack: "⚡",
+  key_pass: "🎯", pressing_spell: "🔥", chaos_spike: "🌪", sustained_possession: "🔄", thunderbolt: "💥", milestone: "🏅",
+  substitution: "🔁", half_time: "⏸", full_time: "🏁" };
+function addMoment(m) {
+  if (m.importance < 0.3) return;
+  const icon = m.type === "card" && m.importance < 0.5 ? "🟨" : (ICON[m.type] || "•");
+  const el = document.createElement("div");
+  el.className = "m" + (m.importance >= 0.6 ? " hi" : "");
+  el.innerHTML = `<div class="t">${m.clock} · ${m.type.replace(/_/g, " ")}</div>${icon} ${m.title}`;
+  $("moments").prepend(el);
+  if (m.importance >= 0.45) $("overlay").innerHTML = `${icon} ${m.title}<small>${m.clock} · facts ready for the agents (step 4)</small>`;
+}
+function onEvent(ev) {
+  $("clock").textContent = ev.clock;
+  if (ev.display) {
+    trail.push({ ...ev.display, color: colorOf(ev.team_id) });
+    if (trail.length > 8) trail.shift();
+    draw();
+  }
+}
+function connect(id) {
+  if (ws) ws.close();
+  trail = []; $("moments").innerHTML = ""; draw();
+  ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/matches/${id}?speed=${speed}`);
+  ws.onmessage = e => {
+    const msg = JSON.parse(e.data);
+    if (msg.type === "hello") {
+      meta = msg.match; homeId = meta.home.id;
+      $("hname").textContent = meta.home.name; $("aname").textContent = meta.away.name;
+      $("hsw").style.background = meta.home.colors[0]; $("asw").style.background = meta.away.colors[0];
+      document.documentElement.style.setProperty("--home", meta.home.colors[0]);
+      document.documentElement.style.setProperty("--away", meta.away.colors[0]);
+      $("seek").max = msg.duration_minutes;
+    } else if (msg.type === "event") onEvent(msg.event);
+    else if (msg.type === "moment") addMoment(msg.moment);
+    else if (msg.type === "state") renderState(msg.state);
+    else if (msg.type === "reset") {
+      trail = []; $("moments").innerHTML = "";
+      msg.state.moments.forEach(addMoment); renderState(msg.state); onEvent(msg.event);
+    } else if (msg.type === "status") {
+      playing = msg.playing; $("play").textContent = playing ? "⏸ Pause" : "▶ Play";
+      $("seek").value = parseInt(msg.clock); $("seekv").textContent = $("seek").value + "'";
+    }
+  };
+}
+const send = o => ws && ws.readyState === 1 && ws.send(JSON.stringify(o));
+$("play").onclick = () => send({ cmd: playing ? "pause" : "play" });
+$("seek").oninput = () => $("seekv").textContent = $("seek").value + "'";
+$("seek").onchange = () => send({ cmd: "seek", minute: +$("seek").value });
+$("speeds").innerHTML = [1, 10, 30, 60, 120].map(s => `<button data-s="${s}" class="${s === speed ? "on" : ""}">${s}x</button>`).join(" ");
+$("speeds").onclick = e => {
+  const s = +e.target.dataset.s; if (!s) return;
+  speed = s; send({ cmd: "speed", value: s });
+  [...$("speeds").children].forEach(b => b.classList.toggle("on", +b.dataset.s === s));
+};
+async function loadMatches(select) {
+  const list = await (await fetch("/api/matches")).json();
+  $("match").innerHTML = list.map(m => `<option value="${m.match_id}">${m.home} v ${m.away} · ${m.scenario.replace(/_/g, " ")} (seed ${m.seed})</option>`).join("");
+  if (select) $("match").value = select;
+  connect($("match").value);
+}
+$("match").onchange = () => connect($("match").value);
+$("new").onclick = async () => {
+  const clubs = ["kestrel", "marlowe", "portellis", "ashvale"].sort(() => Math.random() - .5);
+  const scen = ["standard", "late_comeback", "high_press", "dominant_home", "red_card"][Math.floor(Math.random() * 5)];
+  const r = await (await fetch("/api/matches", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ home: clubs[0], away: clubs[1], scenario: scen }) })).json();
+  loadMatches(r.match_id);
+};
+drawPitch(); loadMatches();
+</script>
+</body>
+</html>

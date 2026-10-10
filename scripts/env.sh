@@ -4,3 +4,4 @@ export GH_CONFIG_DIR="$HOME/.config/gh-touchline"
 export AZURE_CONFIG_DIR="$HOME/.azure-touchline"
 [ -f .venv/bin/activate ] && source .venv/bin/activate
 echo "touchline env: gh -> $GH_CONFIG_DIR, az -> $AZURE_CONFIG_DIR"
+[ -f .env ] && set -a && source .env && set +a

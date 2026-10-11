@@ -34,7 +34,7 @@ flowchart LR
   subgraph ingest["INGEST"]
     SIM["Simulator<br/>synthetic matches"] -->|"ordered event chunks"| EH[("Azure Event Hubs<br/>match-events")]
   end
-  subgraph app["Azure Container Apps (managed identity, no keys)"]
+  subgraph app["Azure App Service container (managed identity, no keys)"]
     EH -->|"consume"| SE["INTERPRET<br/>stats engine (code)"]
     SE --> PB["Playback<br/>WebSocket per viewer"]
     SE --> GD["RENDER<br/>graphics cues"]
@@ -66,7 +66,7 @@ flowchart LR
 | 5 | **Web app**: Studio mode (broadcast overlays, graphics cue feed, analyst desk) and Fan mode (personalized feed, compare viewers) | ✅ done |
 | 5b | **Ask the match**: a tool-using Q&A agent (fact-checked), and the same match tools served over **MCP** at `/mcp/` | ✅ done |
 | 5c | **Voice**: the commentator speaks each verified line (Azure AI Speech HD voices, EN/ES/FR/PT) | ✅ done |
-| 6 | **Deploy** to Azure Container Apps, public repo, architecture diagram | ⏳ |
+| 6 | **Deploy**: Event Hubs ingest, App Service with a managed identity (`scripts/deploy.sh`), architecture diagram. Live: https://touchline-dfbaf4.azurewebsites.net | ✅ done |
 | 7 | **Demo video** (< 2 min) + submission | ⏳ |
 
 Deadline: **Oct 27, 2026, 11:59 PM PT** (Oct 28, ~10:00 Israel).

@@ -73,6 +73,13 @@ class Recap(BaseModel):
     player_reason: str = Field(description="one sentence on why")
 
 
+class Answer(BaseModel):
+    """Match Q&A agent: the answer to one fan question."""
+
+    answer: str = Field(description="the answer, at most 60 words, in the viewer's language")
+    follow_ups: list[str] = Field(description="2-3 short questions the fan might ask next")
+
+
 # ---------------------------------------------------------------- workflow results
 
 

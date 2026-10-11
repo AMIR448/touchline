@@ -24,6 +24,7 @@ from pydantic import ValidationError
 
 from analytics.analyzer import MatchAnalyzer
 from analytics.graphics import GraphicsDirector
+from broadcast.match_tools import MatchTools
 from broadcast.models import ViewerProfile
 from broadcast.relevance import wants_commentary, wants_recap
 from touchline.pitch import to_display
@@ -34,6 +35,7 @@ Send = Callable[[dict[str, Any]], Awaitable[None]]
 
 STATE_INTERVAL_S = 1.0
 MAX_SPEED = 600.0
+MAX_QUESTION_CHARS = 300
 
 
 class Playback:
@@ -44,6 +46,7 @@ class Playback:
         self.broadcast = broadcast  # BroadcastService or None (AI off)
         self.profile = profile or ViewerProfile()
         self.ai_tasks: set[asyncio.Task] = set()
+        self.qa_tasks: set[asyncio.Task] = set()  # fan questions survive a seek, unlike commentary
         self.send = send
         self.home_id = events[0]["details"]["home"]["id"]
         self.speed = speed
@@ -92,6 +95,9 @@ class Playback:
                 await self.send({"type": "error", "message": f"bad profile: {e.errors()[0]['msg']}"})
                 return
             await self.send({"type": "profile", "profile": self.profile.model_dump()})
+        elif cmd == "ask":
+            await self._ask(msg)
+            return
         else:
             await self.send({"type": "error", "message": f"unknown command: {cmd!r}"})
             return
@@ -219,6 +225,42 @@ class Playback:
         task = asyncio.create_task(coro)
         self.ai_tasks.add(task)
         task.add_done_callback(self.ai_tasks.discard)
+
+    async def _ask(self, msg: dict[str, Any]) -> None:
+        """A fan question, answered from the match as it stands right now (no spoilers)."""
+        question = str(msg.get("question", "")).strip()[:MAX_QUESTION_CHARS]
+        qid = str(msg.get("id", ""))[:40]
+        if not question:
+            await self.send({"type": "error", "message": "empty question"})
+            return
+        if not self.broadcast:
+            await self.send({"type": "answer", "id": qid, "question": question, "answer": "The AI crew is off on this server.",
+                             "follow_ups": [], "source": "fallback", "tools": [], "trace": []})
+            return
+        if self.qa_tasks:
+            await self.send({"type": "error", "message": "one question at a time"})
+            return
+        snapshot = self.analyzer.snapshot(max_moments=1000)  # frozen now; play continues meanwhile
+        tools = MatchTools(snapshot, self._players())
+        task = asyncio.create_task(self._answer(qid, question, tools, snapshot["match"]["clock"], self.profile))
+        self.qa_tasks.add(task)
+        task.add_done_callback(self.qa_tasks.discard)
+
+    async def _answer(self, qid: str, question: str, tools: MatchTools, clock: str, profile: ViewerProfile) -> None:
+        try:
+            result = await self.broadcast.ask(question, tools, profile)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("question failed")
+            result = {"answer": "Something went wrong answering that.", "follow_ups": [], "source": "fallback",
+                      "tools": [], "trace": []}
+        await self.send({"type": "answer", "id": qid, "question": question, "clock": clock, **result})
+
+    def close(self) -> None:
+        self.cancel_ai()
+        for task in list(self.qa_tasks):
+            task.cancel()
 
     def cancel_ai(self) -> None:
         for task in list(self.ai_tasks):

@@ -15,7 +15,9 @@ from typing import Any
 
 from .agents import AgentPool
 from .crew import BroadcastCrew
+from .match_tools import MatchTools
 from .models import ViewerProfile
+from .qa import MatchQA
 
 log = logging.getLogger("touchline.broadcast")
 
@@ -23,6 +25,7 @@ log = logging.getLogger("touchline.broadcast")
 class BroadcastService:
     def __init__(self, agents: AgentPool, max_concurrent: int = 6, cache_file: str | Path | None = None):
         self.crew = BroadcastCrew(agents)
+        self.qa = MatchQA(agents)
         self.limit = asyncio.Semaphore(max_concurrent)
         self.cache: dict[str, Any] = {}
         self.inflight: dict[str, asyncio.Future] = {}
@@ -69,6 +72,11 @@ class BroadcastService:
         async def make():
             return await self.crew.recap(snapshot, moments, players, profile)
         return await self._once(f"recap|{match_id}|{moment['id']}|{profile.key()}", make)
+
+    async def ask(self, question: str, tools: MatchTools, profile: ViewerProfile) -> dict:
+        """Fan questions are never cached: the answer depends on the minute it was asked."""
+        async with self.limit:
+            return await self.qa.ask(question, tools, profile)
 
     async def cover_many(self, match_id: str, moment: dict, snapshot: dict, players: dict[str, dict],
                          profiles: list[ViewerProfile]) -> list[dict]:

@@ -12,12 +12,12 @@ from __future__ import annotations
 
 import asyncio
 import os
-from typing import Protocol, TypeVar
+from typing import Any, Callable, Protocol, TypeVar
 
 from pydantic import BaseModel
 
 from . import prompts
-from .models import Commentary, Insight, PersonalizedLine, Recap
+from .models import Answer, Commentary, Insight, PersonalizedLine, Recap
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -26,6 +26,8 @@ CALL_TIMEOUT_S = 30
 
 class AgentPool(Protocol):
     async def run(self, role: str, prompt: str, schema: type[T], instructions: str | None = None) -> T: ...
+
+    async def ask(self, prompt: str, functions: list[Callable[..., Any]], instructions: str) -> Answer: ...
 
 
 class FoundryAgents:
@@ -67,6 +69,18 @@ class FoundryAgents:
         return response.value
 
 
+    async def ask(self, prompt: str, functions: list[Callable[..., Any]], instructions: str) -> Answer:
+        """Match Q&A: a fast-model agent that decides which match tools to call."""
+        from agent_framework import tool
+
+        agent = self._Agent(self.clients["fast"], instructions, name="MatchQA",
+                            tools=[tool(f) for f in functions], default_options={"temperature": 0.3})
+        response = await asyncio.wait_for(agent.run(prompt, options={"response_format": Answer}), CALL_TIMEOUT_S)
+        if response.value is None:
+            raise ValueError("match Q&A returned no structured output")
+        return response.value
+
+
 def _default_credential():
     if os.getenv("TOUCHLINE_AUTH") == "managed":  # running in Azure
         from azure.identity.aio import ManagedIdentityCredential
@@ -103,3 +117,14 @@ class FakeAgents:
             return Recap(headline="A match to remember", summary=[f"It was a story{extra}."], key_numbers=[],
                          player_of_the_match="Nobody", player_reason="Fake.")
         raise TypeError(schema)
+
+    async def ask(self, prompt: str, functions: list[Callable[..., Any]], instructions: str) -> Answer:
+        self.calls.append("qa")
+        if "qa" in self.fail:
+            raise RuntimeError("qa unavailable")
+        bad = self.bad_left.get("qa", 0) > 0
+        if bad:
+            self.bad_left["qa"] -= 1
+        situation = functions[0]()  # match_situation, like a real agent's first tool call
+        return Answer(answer=f"It's {situation['score']}{' after 999 passes' if bad else ''}.",
+                      follow_ups=["Who is on top?"])

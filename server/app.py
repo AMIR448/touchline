@@ -28,6 +28,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import BaseModel
 
 from analytics.analyzer import MatchAnalyzer
@@ -38,6 +39,7 @@ from simulator.clubs import CLUBS
 from simulator.engine import simulate
 from simulator.scenarios import SCENARIOS
 
+from . import mcp_server
 from .playback import Playback
 
 STATIC = Path(__file__).parent / "static"
@@ -98,10 +100,14 @@ async def lifespan(_app: FastAPI):
     if not hasattr(_app.state, "broadcast"):  # tests may inject their own
         Path("data").mkdir(exist_ok=True)
         _app.state.broadcast = _broadcast_service()
-    yield
+    async with mcp.session_manager.run():  # the MCP endpoint's own lifecycle
+        yield
 
 
 app = FastAPI(title="Touchline", version="0.1.0", lifespan=lifespan)
+mcp = mcp_server.build(MATCHES)
+mcp_app = mcp.streamable_http_app(streamable_http_path="/", stateless_http=True, json_response=True,
+                                  transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False))
 
 
 @app.middleware("http")
@@ -218,7 +224,7 @@ async def watch(ws: WebSocket, match_id: str, speed: float = 10.0, autoplay: boo
         pass
     finally:
         runner.cancel()
-        playback.cancel_ai()
+        playback.close()
 
 
 @app.get("/")
@@ -232,3 +238,4 @@ def dev_viewer() -> FileResponse:
 
 
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
+app.mount("/mcp", mcp_app)  # the match tools over MCP: see server/mcp_server.py

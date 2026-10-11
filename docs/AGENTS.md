@@ -25,6 +25,37 @@ flowchart TD
 | 🎛 **Producer** | gpt-4.1-mini | One version per viewer: analyst or casual, favourite club and player, language | `PersonalizedLine`, fact-checked again |
 | 📰 **Recap writer** | gpt-5-mini | Half-time and full-time story, with its own fact-check loop | `Recap` |
 
+## Ask the match (Q&A agent)
+
+Fans type a question during the match ("How is Castell playing?", "Why are Marlowe winning?").
+Unlike the commentary crew, nobody hands this agent its facts: **it decides what to look up.**
+
+```
+question ──▶ MatchQA agent ──calls the tools it needs──▶ answer ──▶ Fact-checker ──▶ fan
+                  ▲                                                     │
+                  └──────────── one rewrite with the problems ◀─────────┘
+```
+
+- **Tools** (`broadcast/match_tools.py`): `match_situation`, `team_stats`, `player_stats`,
+  `top_players`, `key_moments`. Plain code over the stats engine, passed to an Agent Framework
+  `Agent` as function tools. The model (gpt-4.1-mini) picks which to call, often several.
+- **No spoilers**: tools read a snapshot frozen at the minute the question was asked.
+- **Fact-checked against what it looked up**: every number and name in the answer must appear in
+  the tool results (or the current situation). Otherwise one rewrite, then an honest
+  "I couldn't verify that" instead of a guess.
+- **Stays on topic**: questions about real clubs, betting or anything else get a polite refusal.
+- The UI shows which tools were called and opens the full trace from the "Fact-checked" chip.
+
+## MCP server
+
+The same tools are served over the **Model Context Protocol** at `/mcp/` (streamable HTTP,
+`server/mcp_server.py`), with a `match_id` and an optional `minute`. Any MCP client (GitHub
+Copilot, Claude, a Foundry agent, a club's own analyst bot) can query a match:
+
+```json
+{ "mcpServers": { "touchline": { "type": "http", "url": "http://localhost:8000/mcp/" } } }
+```
+
 ## Design principles
 
 - **Numbers come from code, words come from AI.** Agents only receive a slice of the stats

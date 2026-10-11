@@ -17,7 +17,8 @@ const AGENT = { analyst: ["🧠", "Analyst", "Explains why the moment matters, f
   fact_checker: ["✅", "Fact-checker", "Code, not AI: every number and name must be in the facts"],
   producer: ["🎛️", "Producer", "Tailors the line to this viewer"],
   recap_writer: ["📰", "Recap writer", "Tells the story of the match"],
-  recap_fact_checker: ["✅", "Fact-checker", "Checks the recap"] };
+  recap_fact_checker: ["✅", "Fact-checker", "Checks the recap"],
+  match_qa: ["🔎", "Match Q&A", "Decides which stats to look up, then answers"] };
 const STUDIO_PROFILE = { persona: "analyst", language: "en", favorite_team: null, favorite_player: null };
 const profileKey = p => `${p.persona}|${p.language}|${p.favorite_team || "-"}|${p.favorite_player || "-"}`;
 const icon = m => (m.type === "card" && m.importance < 0.5 ? "🟨" : ICON[m.type] || "•");
@@ -53,7 +54,8 @@ function teamColors(meta) {
 
 const startLineups = meta => (meta ? { [meta.home.id]: meta.home.starters.map(p => p.id), [meta.away.id]: meta.away.starters.map(p => p.id) } : {});
 const initial = () => ({ meta: null, durationMin: 95, status: { playing: false, speed: 10, clock: "00:00" }, clock: "00:00", period: 1,
-  trail: [], last: null, lineups: {}, snapshot: null, moments: [], cues: [], badges: [], banner: null, lower: null, recap: null, lastAI: null });
+  trail: [], last: null, lineups: {}, snapshot: null, moments: [], cues: [], badges: [], banner: null, lower: null, recap: null, lastAI: null,
+  qa: [] });
 
 function applyLineup(lineups, ev) {
   const team = lineups[ev.team_id];
@@ -110,6 +112,10 @@ function reduce(s, msg, key) {
     }
     case "recap":
       return msg.profile_key === key && msg.recap ? { ...s, recap: msg } : s;
+    case "answer":
+      return { ...s, qa: s.qa.map(q => (q.id === msg.id ? { ...q, ...msg, pending: false } : q)) };
+    case "error":
+      return { ...s, qa: s.qa.map(q => (q.pending ? { ...q, pending: false, answer: msg.message, source: "fallback", tools: [], trace: [] } : q)) };
     default:
       return s;
   }
@@ -133,7 +139,12 @@ function useMatch(matchId, profile) {
   }, [matchId]);
   // Profile changes are sent live, so the match keeps playing from where it is.
   useEffect(() => { send({ cmd: "profile", ...profile }); }, [keyRef.current]);
-  return [s, send];
+  const ask = useCallback(question => {
+    const id = "q" + Date.now();
+    setS(prev => ({ ...prev, qa: [...prev.qa, { id, question, pending: true, clock: prev.clock }] }));
+    send({ cmd: "ask", id, question });
+  }, []);
+  return [s, send, ask];
 }
 
 function useTick(ms) {
@@ -550,6 +561,49 @@ function Feed({ s, send, profile, onCompare, onProof, all }) {
   </div>`;
 }
 
+// ------------------------------------------------------------------ ask the match
+
+function suggestions(s) {
+  const out = ["Who's on top right now, and why?", "What changed in the last 10 minutes?"];
+  const top = s.snapshot && s.snapshot.top_players[0];
+  if (top && top.touches) out.splice(1, 0, `How is ${top.name} playing?`);
+  out.push("Who has been the best defender?");
+  return out;
+}
+
+function Ask({ s, ask, onProof }) {
+  const [text, setText] = useState("");
+  const end = useRef(null);
+  const busy = s.qa.some(q => q.pending);
+  const go = q => { q = (q || "").trim(); if (q && !busy) { ask(q); setText(""); } };
+  useEffect(() => { end.current && end.current.scrollIntoView({ behavior: "smooth", block: "end" }); }, [s.qa]);
+  const last = s.qa[s.qa.length - 1];
+  return html`<div class="ask">
+    <div class="thread">
+      ${!s.qa.length && html`<div class="ask-intro">
+        <div class="cap">Ask the match</div>
+        <p>Ask anything about this match so far. An agent decides which stats to look up, and every number in its answer is fact-checked.</p></div>`}
+      ${s.qa.map(q => html`<div class="qa" key=${q.id}>
+        <div class="q"><span class="muted">${q.clock}</span> ${q.question}</div>
+        ${q.pending ? html`<div class="a pending"><span class="dots"><i></i><i></i><i></i></span> Looking it up…</div>`
+          : html`<div class="a">
+            <p>${q.answer}</p>
+            ${q.tools && q.tools.length > 0 && html`<div class="tools">${q.tools.map(t => html`<span class="tool" title=${`${t.ms} ms`}>🔧 ${t.tool.replace(/_/g, " ")}${t.args ? " · " + t.args : ""}</span>`)}</div>`}
+            <div class="arow"><${ProofChip} ai=${{ ...q, caption: q.question, line: q.answer }}
+              onProof=${a => onProof(a, { type: "qa", clock: q.clock, title: q.question })} /></div>
+          </div>`}
+      </div>`)}
+      <div class="chips">${(last && !last.pending && last.follow_ups && last.follow_ups.length ? last.follow_ups : suggestions(s))
+        .map(q => html`<button class="sugg" disabled=${busy} onClick=${() => go(q)}>${q}</button>`)}</div>
+      <div ref=${end}></div>
+    </div>
+    <form class="askbar" onSubmit=${e => { e.preventDefault(); go(text); }}>
+      <input value=${text} onInput=${e => setText(e.target.value)} maxLength="300" placeholder="Ask about this match…" aria-label="Ask about this match" />
+      <button class="btn primary" disabled=${busy || !text.trim()}>Ask</button>
+    </form>
+  </div>`;
+}
+
 // ------------------------------------------------------------------ control room (studio only)
 
 function TraceSteps({ trace }) {
@@ -603,11 +657,12 @@ function Stage({ s, send, colors, side, showLower, onProof }) {
   </main>`;
 }
 
-function Studio({ s, send, matchId, colors, onCompare, onProof }) {
+function Studio({ s, send, ask, matchId, colors, onCompare, onProof }) {
   const [tab, setTab] = useState("live");
   return html`<${Stage} s=${s} send=${send} colors=${colors} showLower=${true} onProof=${onProof} side=${html`
-    <${Tabs} tab=${tab} setTab=${setTab} tabs=${[["live", "Commentary"], ["analysis", "Analysis"], ["control", "Control room"]]} />
-    <div class="tabbody">
+    <${Tabs} tab=${tab} setTab=${setTab} tabs=${[["live", "Commentary"], ["ask", "Ask"], ["analysis", "Analysis"], ["control", "Control room"]]} />
+    <div class=${"tabbody" + (tab === "ask" ? " flush" : "")}>
+      ${tab === "ask" && html`<${Ask} s=${s} ask=${ask} onProof=${onProof} />`}
       ${tab === "live" && html`<${Feed} s=${s} send=${send} profile=${STUDIO_PROFILE} onCompare=${onCompare} onProof=${onProof} all=${true} />`}
       ${tab === "analysis" && html`<${Analysis} s=${s} colors=${colors} />`}
       ${tab === "control" && html`<${ControlRoom} s=${s} matchId=${matchId} />`}
@@ -622,7 +677,7 @@ function YourPlayer({ s, id }) {
     : "· moments involving them are always covered for you"}</span></div>`;
 }
 
-function Fan({ s, send, profile, colors, onEdit, onCompare, onProof }) {
+function Fan({ s, send, ask, profile, colors, onEdit, onCompare, onProof }) {
   const [tab, setTab] = useState("feed");
   const team = teamOf(s.meta, profile.favorite_team);
   return html`<${Stage} s=${s} send=${send} colors=${colors} showLower=${false} onProof=${onProof} side=${html`
@@ -630,8 +685,9 @@ function Fan({ s, send, profile, colors, onEdit, onCompare, onProof }) {
       <span><b>${team ? team.name + " fan" : "Neutral"}</b> · ${profile.persona === "analyst" ? "tactics" : "the story"} · ${LANGS[profile.language]}</span>
       <span class="spacer"></span><button class="btn sm" onClick=${onEdit}>Change</button></div>
     ${profile.favorite_player && html`<${YourPlayer} s=${s} id=${profile.favorite_player} />`}
-    <${Tabs} tab=${tab} setTab=${setTab} tabs=${[["feed", "For you"], ["analysis", "Stats"]]} />
-    <div class="tabbody">
+    <${Tabs} tab=${tab} setTab=${setTab} tabs=${[["feed", "For you"], ["ask", "Ask"], ["analysis", "Stats"]]} />
+    <div class=${"tabbody" + (tab === "ask" ? " flush" : "")}>
+      ${tab === "ask" && html`<${Ask} s=${s} ask=${ask} onProof=${onProof} />`}
       ${tab === "feed" && html`<${Feed} s=${s} send=${send} profile=${profile} onCompare=${onCompare} onProof=${onProof} />`}
       ${tab === "analysis" && html`<${Analysis} s=${s} colors=${colors} />`}
     </div>`} />`;
@@ -683,7 +739,7 @@ function ProofModal({ ai, moment, onClose }) {
   const total = ai.trace.reduce((a, x) => a + x.ms, 0);
   const caught = ai.trace.filter(x => x.agent.includes("fact_checker") && x.note.startsWith("rejected")).length;
   return html`<${Modal} onClose=${onClose}>
-    <h2>How this line was made</h2>
+    <h2>How this ${moment.type === "qa" ? "answer" : "line"} was made</h2>
     <div class="muted">${icon(moment)} ${moment.clock} · ${moment.title}</div>
     <div class="proof-line"><div class="cap">${ai.caption}</div><p>${ai.line}</p></div>
     <div class="proof-sum">
@@ -753,7 +809,7 @@ function App() {
   const [fanReady, setFanReady] = useState(false), [compare, setCompare] = useState(null), [gen, setGen] = useState(false);
   const [proof, setProof] = useState(null);
   const profile = mode === "fan" && fanReady ? fanProfile : STUDIO_PROFILE;
-  const [s, send] = useMatch(matchId, profile);
+  const [s, send, ask] = useMatch(matchId, profile);
   const colors = useMemo(() => teamColors(s.meta), [s.meta]);
   const onProof = useCallback((a, m) => setProof({ ai: a, moment: m }), []);
 
@@ -778,10 +834,10 @@ function App() {
       <span class="spacer"></span>
       <span class=${"pill" + (ai ? " live" : "")}><span class="dot"></span>${ai == null ? "…" : ai ? "AI crew live · Microsoft Foundry" : "AI off"}</span>
     </header>
-    ${mode === "studio" && html`<${Studio} s=${s} send=${send} matchId=${matchId} colors=${colors} onCompare=${ai ? setCompare : null} onProof=${onProof} />`}
+    ${mode === "studio" && html`<${Studio} s=${s} send=${send} ask=${ask} matchId=${matchId} colors=${colors} onCompare=${ai ? setCompare : null} onProof=${onProof} />`}
     ${mode === "fan" && !fanReady && html`<${FanSetup} meta=${s.meta} profile=${fanProfile} setProfile=${setFanProfile}
       onDone=${() => { setFanReady(true); setTimeout(() => send({ cmd: "play" }), 150); }} />`}
-    ${mode === "fan" && fanReady && html`<${Fan} s=${s} send=${send} profile=${fanProfile} colors=${colors} onEdit=${() => setFanReady(false)}
+    ${mode === "fan" && fanReady && html`<${Fan} s=${s} send=${send} ask=${ask} profile=${fanProfile} colors=${colors} onEdit=${() => setFanReady(false)}
       onCompare=${ai ? setCompare : null} onProof=${onProof} />`}
     ${proof && html`<${ProofModal} ai=${proof.ai} moment=${proof.moment} onClose=${() => setProof(null)} />`}
     ${compare && html`<${CompareModal} matchId=${matchId} moment=${compare} meta=${s.meta} onClose=${() => setCompare(null)} />`}

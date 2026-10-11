@@ -153,3 +153,31 @@ def test_stream_carries_cues(client):
             if msg["type"] == "end":
                 break
     assert {"player_tag", "stat_badge", "score_bug", "moment_banner", "lower_third"} <= kinds
+
+
+def test_ask_the_match(client):
+    match_id = client.get("/api/matches").json()[0]["match_id"]
+    with client.websocket_connect(f"/ws/matches/{match_id}?speed=1&autoplay=false") as ws:
+        ws.receive_json(), ws.receive_json()  # hello, status
+        ws.send_json({"cmd": "seek", "minute": 30})
+        ws.receive_json(), ws.receive_json()  # reset, status
+        ws.send_json({"cmd": "ask", "id": "q1", "question": "What's the score?"})
+        msg = ws.receive_json()
+        assert msg["type"] == "answer" and msg["id"] == "q1" and msg["source"] == "ai"
+        assert msg["clock"] < "31"  # answered as of the viewer's minute
+
+
+def test_mcp_endpoint_lists_and_answers(client):
+    """Speak MCP's JSON-RPC over HTTP, like an MCP client would."""
+    headers = {"Accept": "application/json, text/event-stream"}
+    def rpc(method, params, id=1):
+        r = client.post("/mcp/", headers=headers, json={"jsonrpc": "2.0", "id": id, "method": method, "params": params})
+        assert r.status_code == 200, r.text
+        return r.json()["result"]
+    rpc("initialize", {"protocolVersion": "2025-06-18", "capabilities": {},
+                       "clientInfo": {"name": "test", "version": "0"}})
+    names = {t["name"] for t in rpc("tools/list", {}, 2)["tools"]}
+    assert {"list_matches", "match_situation", "player_stats", "top_players", "key_moments"} <= names
+    match_id = client.get("/api/matches").json()[0]["match_id"]
+    res = rpc("tools/call", {"name": "match_situation", "arguments": {"match_id": match_id, "minute": 30}}, 3)
+    assert not res.get("isError") and "score" in res["content"][0]["text"]

@@ -79,6 +79,7 @@ def test_pause_and_seek(client):
         reset = ws.receive_json()
         assert reset["type"] == "reset"
         assert reset["state"]["match"]["clock"].startswith("59:")  # state rebuilt up to the hour mark
+        assert all(len(team) == 11 for team in reset["lineups"].values())  # for drawing players after a jump
         status = ws.receive_json()
         assert status["playing"] is False
 

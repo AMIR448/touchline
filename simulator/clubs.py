@@ -90,6 +90,7 @@ class Club:
             "short": self.short,
             "colors": list(self.colors),
             "formation": self.formation,
+            "slots": [list(s) for s in self.slots],  # (label, role, x, y): lets a UI draw the team's shape
             "tactics": vars(self.tactics),
             "starters": [p(pl, s[0]) for pl, s in zip(self.starters, self.slots)],
             "bench": [p(pl) for pl in self.bench],

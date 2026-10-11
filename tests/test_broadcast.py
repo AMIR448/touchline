@@ -61,6 +61,10 @@ def test_factcheck_rejects_mixed_alphabets():
     assert not result.ok and "non-Latin" in result.problems[0]
 
 
+def test_factcheck_accepts_negative_numbers():
+    assert check(["Momentum sits at -0.51, all Marlowe."], [{"momentum": -0.51}]).ok
+
+
 # ---------------------------------------------------------------- crew workflow
 
 def test_happy_path_runs_every_agent(goal):
@@ -91,6 +95,12 @@ def test_producer_failure_falls_back_to_verified_neutral_line(goal):
     agents = FakeAgents(bad_drafts={"producer": 99})
     [c] = cover(agents, goal, [ViewerProfile(language="es")])
     assert c.source == "ai" and c.line == "What a moment!" and c.language == "en"
+
+
+def test_studio_feed_skips_the_producer(goal):
+    agents = FakeAgents()
+    [c] = cover(agents, goal, [ViewerProfile(persona="analyst")])
+    assert c.source == "ai" and "producer" not in agents.calls
 
 
 def test_analyst_outage_does_not_stop_the_show(goal):

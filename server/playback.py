@@ -121,7 +121,20 @@ class Playback:
             self.idx += 1
         self._rebase(target_ms)
         last = self.events[self.idx - 1]
-        await self.send({"type": "reset", "event": self._with_display(last), "state": self.analyzer.snapshot()})
+        await self.send({"type": "reset", "event": self._with_display(last), "state": self.analyzer.snapshot(),
+                         "lineups": self._lineups()})
+
+    def _lineups(self) -> dict[str, list[str | None]]:
+        """Who is on the pitch right now, per team, aligned with the formation slots (None = sent off)."""
+        start = self.events[0]["details"]
+        out = {t["id"]: [p["id"] for p in t["starters"]] for t in (start["home"], start["away"])}
+        for ev in self.events[1:self.idx]:
+            team = out.get(ev.get("team_id"), [])
+            if ev["type"] == "substitution":
+                team[:] = [ev["details"]["player_on_id"] if p == ev["details"]["player_off_id"] else p for p in team]
+            elif ev["type"] == "card" and ev["details"].get("card") in ("red", "second_yellow"):
+                team[:] = [None if p == ev["player_id"] else p for p in team]
+        return out
 
     # ------------------------------------------------------------------ output
 

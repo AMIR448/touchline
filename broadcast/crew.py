@@ -8,7 +8,7 @@
 - Commentator (fast model): broadcast caption and line.
 - FactChecker (code): every number/name must be in the facts; failures loop back with the problems.
 - Producer (fast model): one tailored version per viewer profile, in parallel, each fact-checked
-  again (one rewrite, then the verified neutral line).
+  again (one rewrite, then the verified neutral line). The neutral studio feed skips it.
 
 Every step is timed and recorded in the coverage `trace`, which the UI can show.
 `recap()` runs a second, smaller workflow: RecapWriter ⇄ FactChecker.
@@ -159,7 +159,7 @@ class ProducerExecutor(Executor):
         trace = list(job.trace)
         neutral = Coverage(job.req.moment["id"], profile.key(), job.commentary.caption, job.commentary.line, "en",
                            job.source, job.insight.model_dump(), trace)
-        if job.source == "fallback":
+        if job.source == "fallback" or profile.is_broadcast():
             return neutral
         extra = viewer_context(profile, job.req.snapshot, job.req.players)
         base = (f"{_facts_block({**job.req.context, **extra})}\n\nCOMMENTARY TO TAILOR:\n{job.commentary.model_dump_json()}"

@@ -44,6 +44,7 @@ def allowed_numbers(*contexts: Any) -> set[float]:
     out = set(ALWAYS_ALLOWED)
     for ctx in contexts:
         for v in _numbers_in(ctx):
+            v = abs(v)  # the regex reads "-0.51" as "0.51", so compare magnitudes
             out.add(v)
             if 0 < v < 1:
                 out.add(round(v * 100))  # xG 0.19 -> "a 19% chance"

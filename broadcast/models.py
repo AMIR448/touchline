@@ -27,6 +27,10 @@ class ViewerProfile(BaseModel):
     def key(self) -> str:
         return f"{self.persona}|{self.language}|{self.favorite_team or '-'}|{self.favorite_player or '-'}"
 
+    def is_broadcast(self) -> bool:
+        """The neutral English studio feed: the commentator already writes for it, no tailoring needed."""
+        return self.persona == "analyst" and self.language == "en" and not self.favorite_team and not self.favorite_player
+
 
 # ---------------------------------------------------------------- agent outputs
 

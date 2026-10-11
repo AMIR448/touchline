@@ -26,8 +26,18 @@ exists() { "$@" --only-show-errors -o none 2>/dev/null; }
 step "Container registry $ACR"
 exists az acr show -n "$ACR" -g "$RG" || az acr create -n "$ACR" -g "$RG" -l "$LOC" --sku Basic --only-show-errors -o none
 
-step "Build image touchline:$TAG in Azure (no local Docker needed)"
-az acr build -r "$ACR" -t "touchline:$TAG" -t touchline:latest . --only-show-errors -o none
+step "Build and push image touchline:$TAG"
+IMAGE=$ACR.azurecr.io/touchline
+if ! az acr build -r "$ACR" -t "touchline:$TAG" -t touchline:latest . --only-show-errors -o none 2>/dev/null; then
+  # Free Trial subscriptions can't use ACR Tasks: build locally instead (Azure runs linux/amd64).
+  # A project-only Docker config keeps this registry login out of any other Docker setup.
+  export DOCKER_CONFIG=$HOME/.docker-touchline DOCKER_HOST=${DOCKER_HOST:-unix://$HOME/.docker/run/docker.sock}
+  mkdir -p "$DOCKER_CONFIG"
+  docker build --platform linux/amd64 -t "$IMAGE:$TAG" -t "$IMAGE:latest" .
+  az acr login -n "$ACR" --expose-token --query accessToken -o tsv --only-show-errors |
+    docker login "$ACR.azurecr.io" -u 00000000-0000-0000-0000-000000000000 --password-stdin
+  docker push -q "$IMAGE:$TAG" && docker push -q "$IMAGE:latest"
+fi
 
 step "Event Hubs $EH_NS/$EH (the ingest stage)"
 exists az eventhubs namespace show -n "$EH_NS" -g "$RG" ||

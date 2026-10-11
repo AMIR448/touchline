@@ -27,6 +27,34 @@ Judges watch a demo of under 2 minutes, then click a public link to try it thems
 Rule of thumb: **numbers come from code, words come from AI.** Agents never invent a stat;
 they explain stats the engine computed, and cite the event IDs behind them.
 
+## Architecture on Azure
+
+```mermaid
+flowchart LR
+  subgraph ingest["INGEST"]
+    SIM["Simulator<br/>synthetic matches"] -->|"ordered event chunks"| EH[("Azure Event Hubs<br/>match-events")]
+  end
+  subgraph app["Azure Container Apps (managed identity, no keys)"]
+    EH -->|"consume"| SE["INTERPRET<br/>stats engine (code)"]
+    SE --> PB["Playback<br/>WebSocket per viewer"]
+    SE --> GD["RENDER<br/>graphics cues"]
+    SE --> CREW["EXPLAIN + PERSONALIZE<br/>Agent Framework workflow:<br/>Analyst → Commentator → Fact-checker → Producer"]
+    SE --> TOOLS["Match tools"]
+    TOOLS --> QA["Ask the match<br/>tool-using agent + fact-checker"]
+    TOOLS --> MCP["MCP server /mcp/"]
+  end
+  subgraph foundry["Microsoft Foundry"]
+    M1["gpt-5-mini<br/>reasoning"]
+    M2["gpt-4.1-mini<br/>fast"]
+    SP["Azure AI Speech<br/>HD voices"]
+  end
+  CREW --> M1 & M2
+  QA --> M2
+  PB -->|"commentary audio"| SP
+  PB & GD & QA --> UI["Web app<br/>Studio · Fan"]
+  MCP -.-> EXT["Any MCP client<br/>Copilot, Claude, agents"]
+```
+
 ## Build steps
 
 | # | Step | Status |

@@ -87,7 +87,14 @@ def _summary(match_id: str) -> dict:
             "scenario": d["scenario"], "seed": d["seed"], "final_score": events[-1]["details"]["score"]}
 
 
-def _create(req: NewMatch) -> str:
+INGEST = None  # EventHubIngest when EVENTHUB_NAMESPACE is set; None = simulate in-process
+
+
+def _ingested(match_key: str, events: list[dict]) -> None:
+    MATCHES[match_key] = events
+
+
+async def _create(req: NewMatch) -> str:
     if req.home not in CLUBS or req.away not in CLUBS or req.home == req.away:
         raise HTTPException(400, f"pick two different clubs from: {', '.join(CLUBS)}")
     if req.scenario not in SCENARIOS:
@@ -95,17 +102,45 @@ def _create(req: NewMatch) -> str:
     seed = req.seed if req.seed is not None else random.randint(1, 99_999)
     events = simulate(CLUBS[req.home], CLUBS[req.away], seed, req.scenario)
     match_id = f"{events[0]['match_id']}-{req.scenario}"
-    MATCHES[match_id] = events
+    if INGEST is None:
+        MATCHES[match_id] = events
+    else:  # through the stream: the app knows the match once it has read it back from Event Hubs
+        await INGEST.publish(match_id, events)
     return match_id
+
+
+async def _start_ingest() -> None:
+    """Use Event Hubs as the ingest stage if configured; if it can't start, keep serving locally."""
+    global INGEST
+    namespace, hub = os.getenv("EVENTHUB_NAMESPACE"), os.getenv("EVENTHUB_NAME", "match-events")
+    if not namespace:
+        return
+    from broadcast.agents import _default_credential
+    from ingest.hub import EventHubIngest
+    try:
+        ingest = EventHubIngest(namespace, hub, _default_credential(), _ingested)
+        await ingest.start()
+        INGEST = ingest
+        log.info("ingest: Event Hubs %s/%s", namespace, hub)
+    except Exception:
+        log.exception("Event Hubs ingest failed to start; simulating in-process")
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    """A few ready-made matches so the app has something to show immediately."""
+    """Start the ingest stage, then a few ready-made matches so the app has something to show immediately."""
+    global INGEST
+    await _start_ingest()
     for home, away, seed, scenario in [("kestrel", "marlowe", 21, "standard"),
                                        ("marlowe", "portellis", 21, "late_comeback"),
                                        ("portellis", "ashvale", 8, "red_card")]:
-        _create(NewMatch(home=home, away=away, seed=seed, scenario=scenario))
+        req = NewMatch(home=home, away=away, seed=seed, scenario=scenario)
+        try:
+            await _create(req)
+        except Exception:
+            log.exception("demo match via Event Hubs failed; falling back to in-process")
+            INGEST = None
+            await _create(req)
     if not hasattr(_app.state, "broadcast"):  # tests may inject their own
         Path("data").mkdir(exist_ok=True)
         _app.state.broadcast = _broadcast_service()
@@ -113,6 +148,8 @@ async def lifespan(_app: FastAPI):
         _app.state.voice = _voice_service(_app.state.broadcast)
     async with mcp.session_manager.run():  # the MCP endpoint's own lifecycle
         yield
+    if INGEST:
+        await INGEST.close()
 
 
 app = FastAPI(title="Touchline", version="0.1.0", lifespan=lifespan)
@@ -134,6 +171,7 @@ async def revalidate_app_files(request, call_next):
 @app.get("/api/health")
 def health() -> dict:
     return {"ok": True, "matches": len(MATCHES), "ai": app.state.broadcast is not None,
+            "ingest": "event-hubs" if INGEST else "in-process",
             "voice": getattr(app.state, "voice", None) is not None}
 
 
@@ -153,8 +191,8 @@ def list_matches() -> list[dict]:
 
 
 @app.post("/api/matches", status_code=201)
-def create_match(req: NewMatch) -> dict:
-    return _summary(_create(req))
+async def create_match(req: NewMatch) -> dict:
+    return _summary(await _create(req))
 
 
 @app.get("/api/matches/{match_id}/snapshot")

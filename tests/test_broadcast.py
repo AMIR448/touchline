@@ -153,3 +153,10 @@ def test_service_caches_and_dedupes(goal):
 
     asyncio.run(main())
     assert agents.calls.count("analyst") == 2
+
+
+def test_context_says_who_is_winning(goal):
+    from broadcast.context import moment_context
+    moment, snap, players = goal
+    situation = moment_context(moment, snap, players)["match"]["situation"]
+    assert situation == "level" or " lead by " in situation

@@ -204,6 +204,12 @@ function shapeTargets(meta, lineups, last) {
       out[id] = { pos: toDisp([clampX(p[0]), clampY(p[1])]), team: t.id, gk: role === "GK" };
     });
   }
+  // two opponents on the same spot (a No. 10 against a holding midfielder) would hide each other
+  const all = Object.values(out);
+  for (const a of all) for (const b of all)
+    if (a.team === meta.home.id && b.team !== a.team && Math.hypot(a.pos[0] - b.pos[0], a.pos[1] - b.pos[1]) < 3.5) {
+      a.pos = [a.pos[0] - 1.2, clampY(a.pos[1] - 1.8)]; b.pos = [b.pos[0] + 1.2, clampY(b.pos[1] + 1.8)];
+    }
   if (!last) return out;
   // The player on the ball stands where the action started; the nearest team-mate to where it ended
   // receives it; the nearest opponent closes them down.
@@ -330,32 +336,33 @@ function Pitch({ s, colors }) {
   return html`<canvas ref=${canvas}></canvas>`;
 }
 
-// Keeps the pitch at 105:68 and as large as the space allows, so the stats around it stay on screen.
-function useFit(ref) {
-  const [size, setSize] = useState(null);
+// Sizes the left column to the largest 105:68 pitch that fits the height, so the pitch, timeline and
+// stats strip line up and the side panel takes the rest of the width.
+function useStageFit(ref) {
+  const [w, setW] = useState(null);
   useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
+    const st = ref.current;
+    if (!st) return;
     const fit = () => {
-      if (window.innerWidth <= 1000) return setSize(null);
-      const w = el.clientWidth, hh = el.clientHeight;
-      setSize({ width: Math.floor(Math.min(w, (hh * PL) / PW)), height: Math.floor(Math.min(hh, (w * PW) / PL)) });
+      const wrap = st.querySelector(".pitchwrap");
+      if (window.innerWidth <= 1000 || !wrap) return setW(null);
+      const avail = st.clientWidth - 36 - 16 - 340; // padding, gap, narrowest side panel
+      setW(Math.floor(Math.min(avail, (wrap.clientHeight * PL) / PW)));
     };
-    const ro = new ResizeObserver(fit); ro.observe(el); fit();
+    const ro = new ResizeObserver(fit); ro.observe(st); fit();
     return () => ro.disconnect();
   }, []);
-  return size;
+  return w;
 }
 
 function Broadcast({ s, colors, showLower = true, onProof }) {
-  const wrap = useRef(null), size = useFit(wrap);
   const now = useTick(400);
   const meta = s.meta;
   const score = s.snapshot ? s.snapshot.match.score : {};
   const badges = s.badges.filter(b => b.until > now);
   const banner = s.banner && s.banner.until > now ? s.banner : null;
   const lower = showLower && s.lower && s.lower.until > now ? s.lower : null; // off air after ~10s, like TV
-  return html`<div class="pitchwrap" ref=${wrap}><div class="frame" style=${size ? { width: size.width + "px", height: size.height + "px" } : {}}>
+  return html`<div class="pitchwrap"><div class="frame">
     <${Pitch} s=${s} colors=${colors} />
     ${meta && html`<div class="scorebug">
       <div class="team"><i style=${{ background: colors[meta.home.id] }}></i>${meta.home.short}</div>
@@ -391,7 +398,8 @@ function Transport({ s, send }) {
     <div class="scrub" ref=${ref} onClick=${seek} title="Click to jump to a minute">
       <div class="track"></div><div class="fill" style=${{ width: `${(pos / max) * 100}%` }}></div>
       <div class="ht" style=${{ left: `${(45 / max) * 100}%` }}></div>
-      ${marks.map(m => html`<span class=${"mk " + m.type} style=${{ left: `${(minuteOf(m.clock) / max) * 100}%` }}>${icon(m)}</span>`)}
+      ${marks.map(m => html`<span class=${"mk mk-" + m.type} title=${m.title} style=${{ left: `${(minuteOf(m.clock) / max) * 100}%` }}>
+        ${m.type === "goal" ? "⚽" : m.type === "card" ? html`<i></i>` : "HT"}</span>`)}
       <div class="head" style=${{ left: `${(pos / max) * 100}%` }}></div>
       ${[0, 15, 30, 45, 60, 75, 90].map(x => html`<span class="lbl" style=${{ left: `${(x / max) * 100}%` }}>${x}'</span>`)}
     </div>
@@ -584,7 +592,8 @@ function Tabs({ tabs, tab, setTab }) {
 }
 
 function Stage({ s, send, colors, side, showLower, onProof }) {
-  return html`<main class="stage">
+  const ref = useRef(null), w = useStageFit(ref);
+  return html`<main class="stage" ref=${ref} style=${w ? { gridTemplateColumns: `${w}px minmax(340px, 620px)` } : {}}>
     <div class="left">
       <${Broadcast} s=${s} colors=${colors} showLower=${showLower} onProof=${onProof} />
       <${Transport} s=${s} send=${send} />

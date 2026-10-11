@@ -53,9 +53,9 @@ a { color: var(--ai); }
 /* ---------- layout: everything on one screen ---------- */
 .app { height: 100vh; height: 100dvh; display: flex; flex-direction: column; }
 .app > .top { flex: none; }
-.stage { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) clamp(340px, 27vw, 430px); grid-template-rows: minmax(0, 1fr);
+.stage { flex: 1; min-height: 0; justify-content: center; display: grid; grid-template-columns: minmax(0, 1fr) clamp(340px, 27vw, 430px); grid-template-rows: minmax(0, 1fr);
   gap: 16px; padding: 14px 18px; max-width: 1800px; width: 100%; margin: 0 auto; }
-.left { display: flex; flex-direction: column; gap: 10px; min-width: 0; min-height: 0; }
+.left { display: flex; flex-direction: column; gap: 10px; min-width: 0; min-height: 0; container-type: inline-size; }
 .pitchwrap { flex: 1; min-height: 0; display: flex; align-items: flex-start; justify-content: center; }
 .side { display: flex; flex-direction: column; min-height: 0; background: linear-gradient(180deg, var(--panel), var(--bg2));
   border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
@@ -133,7 +133,9 @@ button.chip { cursor: pointer; } button.chip:hover { filter: brightness(1.25); }
 .scrub .fill { position: absolute; left: 0; top: 15px; height: 4px; background: var(--ai); border-radius: 4px; }
 .scrub .ht { position: absolute; top: 9px; width: 2px; height: 16px; background: var(--line2); }
 .scrub .mk { position: absolute; top: 0; transform: translateX(-50%); font-size: 13px; line-height: 1; filter: drop-shadow(0 2px 3px #000); }
-.scrub .mk.goal { top: -2px; font-size: 15px; }
+.scrub .mk-goal { top: -2px; font-size: 15px; }
+.scrub .mk-card i { display: block; width: 8px; height: 11px; margin-top: 1px; border-radius: 2px; background: #e5383b; box-shadow: 0 0 0 1px rgba(0, 0, 0, .4); }
+.scrub .mk-half_time { font: 700 9px/1 var(--sans); color: var(--muted); top: 1px; filter: none; }
 .scrub .head { position: absolute; top: 9px; width: 16px; height: 16px; margin-left: -8px; border-radius: 50%; background: var(--text); border: 3px solid var(--ai); }
 .scrub .lbl { position: absolute; top: 24px; font-size: 10px; color: var(--dim); transform: translateX(-50%); }
 
@@ -150,7 +152,7 @@ button.chip { cursor: pointer; } button.chip:hover { filter: brightness(1.25); }
 .stat .bar .hb { left: 0; } .stat .bar .ab { right: 0; }
 .stat.sm { grid-template-columns: auto 1fr auto; margin: 0; }
 .stat.sm .n { font-size: 15px; }
-.stat.sm .lbl { font-size: 10px; letter-spacing: .04em; white-space: nowrap; }
+.stat.sm .lbl { font-size: 10px; letter-spacing: .04em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .strip { display: grid; grid-template-columns: auto minmax(0, 1fr) minmax(140px, 220px); gap: 16px; align-items: center;
   background: linear-gradient(180deg, var(--panel), var(--bg2)); border: 1px solid var(--line); border-radius: 12px; padding: 10px 14px; }
 .strip .teams { display: flex; flex-direction: column; gap: 6px; font: 700 14px/1 var(--display); letter-spacing: .08em; }
@@ -158,7 +160,8 @@ button.chip { cursor: pointer; } button.chip:hover { filter: brightness(1.25); }
 .strip .teams i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
 .strip .cells { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 14px; }
 .strip .mini .mlbl { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .1em; margin-bottom: 2px; }
-@media (max-width: 1250px) { .strip { grid-template-columns: minmax(0, 1fr); } .strip .teams { flex-direction: row; justify-content: space-between; } .strip .mini { display: none; } }
+@container (max-width: 1000px) { .strip { grid-template-columns: auto minmax(0, 1fr); } .strip .mini { display: none; } }
+@container (max-width: 760px) { .strip { grid-template-columns: minmax(0, 1fr); } .strip .teams { flex-direction: row; justify-content: space-between; } }
 @media (max-width: 640px) { .strip .cells { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 .legend { display: flex; gap: 12px; font-size: 11px; color: var(--muted); margin-top: 6px; }
 .legend i { display: inline-block; width: 10px; height: 3px; border-radius: 2px; vertical-align: middle; margin-right: 4px; }

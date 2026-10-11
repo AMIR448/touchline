@@ -50,6 +50,8 @@ pressing team that dominated territory).
 
 Write for this viewer: persona "{persona}" (analyst = tactical with numbers, casual = plain story),
 in {language}. Keep digits as digits and names exactly as written.{favorite}
+Use football terms precisely: the assister passes, the scorer finishes. Don't call a team favourites or
+underdogs; nothing in the facts says so.
 """ + GROUND_RULES
 
 REWRITE = """Your previous draft failed the fact-check:

@@ -22,6 +22,15 @@ def _team_name(snapshot: dict, team_id: str | None) -> str | None:
     return snapshot["teams"].get(team_id, {}).get("name")
 
 
+def _situation(m: dict) -> str:
+    """The score in words, so no model has to work out who is winning from "A 0-1 B"."""
+    h, a = m["score"][m["home"]["id"]], m["score"][m["away"]["id"]]
+    if h == a:
+        return "level"
+    leader, trailer = (m["home"]["name"], m["away"]["name"]) if h > a else (m["away"]["name"], m["home"]["name"])
+    return f"{leader} lead by {abs(h - a)}; {trailer} are behind"
+
+
 def moment_context(moment: dict, snapshot: dict, players: dict[str, dict] | None = None) -> dict[str, Any]:
     """Neutral context for one moment: the moment's facts plus the match picture around it."""
     m = snapshot["match"]
@@ -32,7 +41,7 @@ def moment_context(moment: dict, snapshot: dict, players: dict[str, dict] | None
                    "team": _team_name(snapshot, moment.get("team_id")), "facts": moment["facts"]},
         "match": {"home": m["home"]["name"], "away": m["away"]["name"],
                   "score": f"{m['home']['name']} {m['score'][m['home']['id']]}-{m['score'][m['away']['id']]} {m['away']['name']}",
-                  "clock": moment["clock"], "period": m["period"]},
+                  "situation": _situation(m), "clock": moment["clock"], "period": m["period"]},
         "match_stats": {names[t]: {k: teams[t][k] for k in TEAM_KEYS} for t in teams},
         "last_10_min": {names[t]: snapshot["last_10_min"][t] for t in teams},
         "momentum": {"value": snapshot["momentum"]["value"], "meaning": snapshot["momentum"]["explainer"]},
@@ -65,7 +74,7 @@ def recap_context(snapshot: dict, moments: list[dict]) -> dict[str, Any]:
     return {
         "match": {"home": m["home"]["name"], "away": m["away"]["name"],
                   "score": f"{m['home']['name']} {m['score'][m['home']['id']]}-{m['score'][m['away']['id']]} {m['away']['name']}",
-                  "status": m["status"], "clock": m["clock"]},
+                  "situation": _situation(m), "status": m["status"], "clock": m["clock"]},
         "match_stats": {names[t]: {k: teams[t][k] for k in TEAM_KEYS} for t in teams},
         "key_moments": [{"clock": x["clock"], "type": x["type"], "title": x["title"], "facts": x["facts"]} for x in key],
         "top_players": [{"name": p["name"], "team": names.get(p["team_id"]), **{k: p[k] for k in PLAYER_KEYS if p.get(k)}}

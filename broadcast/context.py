@@ -12,7 +12,7 @@ from .models import ViewerProfile
 
 TEAM_KEYS = ["possession_pct", "shots", "on_target", "xg", "big_chances", "box_entries", "field_tilt_pct",
              "pass_accuracy_pct", "ppda", "corners", "yellow_cards", "red_cards"]
-PLAYER_KEYS = ["goals", "assists", "shots", "xg", "key_passes", "passes", "pass_accuracy_pct",
+PLAYER_KEYS = ["goals", "assists", "shots", "xg", "key_passes", "passes", "passes_completed", "pass_accuracy_pct",
                "progressive_passes", "dribbles_won", "tackles", "interceptions", "saves", "max_shot_speed_kmh"]
 
 

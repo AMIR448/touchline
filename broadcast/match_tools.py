@@ -19,7 +19,7 @@ from .context import PLAYER_KEYS, TEAM_KEYS, _situation
 
 MOMENT_TYPES = ["goal", "big_chance_missed", "great_save", "key_pass", "counter_attack", "sustained_possession",
                 "momentum_swing", "pressing_spell", "chaos_spike", "thunderbolt", "card", "substitution", "milestone"]
-RANK_STATS = ["impact", "goals", "assists", "shots", "xg", "key_passes", "passes", "pass_accuracy_pct",
+RANK_STATS = ["impact", "goals", "assists", "shots", "xg", "key_passes", "passes", "passes_completed", "pass_accuracy_pct",
               "progressive_passes", "dribbles_won", "tackles", "interceptions", "recoveries", "saves", "max_shot_speed_kmh"]
 
 

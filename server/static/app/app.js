@@ -355,10 +355,11 @@ function useStageFit(ref) {
     const st = ref.current;
     if (!st) return;
     const fit = () => {
-      const wrap = st.querySelector(".pitchwrap");
-      if (window.innerWidth <= 1000 || !wrap) return setW(null);
-      const avail = st.clientWidth - 36 - 16 - 340; // padding, gap, narrowest side panel
-      setW(Math.floor(Math.min(avail, (wrap.clientHeight * PL) / PW)));
+      const left = st.querySelector(".left"), tr = st.querySelector(".transport"), strip = st.querySelector(".strip");
+      if (window.innerWidth <= 1000 || !left || !tr || !strip) return setW(null);
+      const availW = st.clientWidth - 36 - 16 - 340; // padding, gap, narrowest side panel
+      const availH = left.clientHeight - tr.offsetHeight - strip.offsetHeight - 20; // two 10px gaps
+      setW(Math.floor(Math.min(availW, (availH * PL) / PW)));
     };
     const ro = new ResizeObserver(fit); ro.observe(st); fit();
     return () => ro.disconnect();

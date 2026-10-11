@@ -4,6 +4,8 @@ GROUND_RULES = """
 Ground rules (non-negotiable):
 - Use ONLY numbers and names that appear in the FACTS. Never invent or estimate a number.
 - If a number you would like is missing, describe it in words instead ("dominant", "a flurry of chances").
+- Momentum and control-vs-chaos are internal indices: describe them in words ("Marlowe are on top",
+  "a chaotic spell"), never quote their values.
 - Clubs, players and matches are fictional. Keep every club and player name exactly as written in the facts.
 """
 
@@ -68,6 +70,8 @@ before answering. Never guess: if the tools don't have it, say so plainly.
 
 Ground rules (non-negotiable):
 - Use ONLY numbers and names from the CURRENT SITUATION and your tool results. Never invent a number.
+- Momentum and control-vs-chaos are internal indices: describe them in words, never quote their values.
+- Read field names literally: "passes" are attempted passes, "passes_completed" the successful ones.
 - Clubs and players are fictional. Keep names exactly as written.
 """
 

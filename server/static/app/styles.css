@@ -55,12 +55,12 @@ a { color: var(--ai); }
 .app > .top { flex: none; }
 .stage { flex: 1; min-height: 0; justify-content: center; display: grid; grid-template-columns: minmax(0, 1fr) clamp(340px, 27vw, 430px); grid-template-rows: minmax(0, 1fr);
   gap: 16px; padding: 14px 18px; max-width: 1800px; width: 100%; margin: 0 auto; }
-.left { display: flex; flex-direction: column; gap: 10px; min-width: 0; min-height: 0; container-type: inline-size; }
-.pitchwrap { flex: 1; min-height: 0; display: flex; align-items: flex-start; justify-content: center; }
+.left { display: flex; flex-direction: column; justify-content: center; gap: 10px; min-width: 0; min-height: 0; container-type: inline-size; }
+.pitchwrap { flex: none; display: flex; justify-content: center; }
 .side { display: flex; flex-direction: column; min-height: 0; background: linear-gradient(180deg, var(--panel), var(--bg2));
   border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
 .tabs { display: flex; gap: 2px; padding: 6px 6px 0; border-bottom: 1px solid var(--line); }
-.tabs button { flex: 1; border: 0; background: none; padding: 9px 4px 10px; white-space: nowrap; color: var(--muted); font: 700 13px var(--display);
+.tabs button { flex: 1 1 auto; border: 0; background: none; padding: 9px 6px 10px; white-space: nowrap; color: var(--muted); font: 700 13px var(--display);
   letter-spacing: .12em; text-transform: uppercase; border-bottom: 2px solid transparent; }
 .tabs button.on { color: var(--text); border-bottom-color: var(--ai); }
 .tabbody { flex: 1; min-height: 0; overflow: auto; padding: 12px; }
@@ -271,3 +271,5 @@ button.chip { cursor: pointer; } button.chip:hover { filter: brightness(1.25); }
   .badges .badge { min-width: 0; padding: 5px 8px; }
   .badge .l { display: none; }
 }
+.side { container-type: inline-size; }
+@container (max-width: 470px) { .tabs button { font-size: 12px; letter-spacing: .06em; padding: 9px 4px 10px; } }

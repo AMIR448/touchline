@@ -37,6 +37,7 @@ they explain stats the engine computed, and cite the event IDs behind them.
 | 4 | **Agents**: Analyst, Commentator, Fact-checker, Producer, Recap writer (Agent Framework on Foundry) | ✅ done |
 | 5 | **Web app**: Studio mode (broadcast overlays, graphics cue feed, analyst desk) and Fan mode (personalized feed, compare viewers) | ✅ done |
 | 5b | **Ask the match**: a tool-using Q&A agent (fact-checked), and the same match tools served over **MCP** at `/mcp/` | ✅ done |
+| 5c | **Voice**: the commentator speaks each verified line (Azure AI Speech HD voices, EN/ES/FR/PT) | ✅ done |
 | 6 | **Deploy** to Azure Container Apps, public repo, architecture diagram | ⏳ |
 | 7 | **Demo video** (< 2 min) + submission | ⏳ |
 

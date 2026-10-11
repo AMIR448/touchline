@@ -160,3 +160,9 @@ def test_context_says_who_is_winning(goal):
     moment, snap, players = goal
     situation = moment_context(moment, snap, players)["match"]["situation"]
     assert situation == "level" or " lead by " in situation
+
+
+def test_voice_ssml_is_escaped_and_native():
+    from broadcast.voice import ssml
+    doc = ssml("Kestrel <3 & Marlowe", "fr", excited=True)
+    assert "fr-FR-Remy" in doc and "&lt;3 &amp;" in doc and "prosody" in doc

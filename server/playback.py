@@ -40,10 +40,11 @@ MAX_QUESTION_CHARS = 300
 
 class Playback:
     def __init__(self, events: list[dict], send: Send, speed: float = 10.0, autoplay: bool = True,
-                 broadcast=None, profile: ViewerProfile | None = None):
+                 broadcast=None, profile: ViewerProfile | None = None, voice=None):
         self.events = events
         self.match_id = events[0]["match_id"]
         self.broadcast = broadcast  # BroadcastService or None (AI off)
+        self.voice = voice  # VoiceService or None: pre-synthesizes lines so the commentator speaks sooner
         self.profile = profile or ViewerProfile()
         self.ai_tasks: set[asyncio.Task] = set()
         self.qa_tasks: set[asyncio.Task] = set()  # fan questions survive a seek, unlike commentary
@@ -257,6 +258,12 @@ class Playback:
                       "tools": [], "trace": []}
         await self.send({"type": "answer", "id": qid, "question": question, "clock": clock, **result})
 
+    async def _warm_voice(self, line: str, language: str, excited: bool) -> None:
+        try:
+            await self.voice.speak(line, language, excited)
+        except Exception:
+            log.warning("voice pre-synthesis failed", exc_info=True)
+
     def close(self) -> None:
         self.cancel_ai()
         for task in list(self.qa_tasks):
@@ -274,6 +281,9 @@ class Playback:
         except Exception:
             log.exception("commentary failed for %s", moment["id"])
             return
+        if self.voice:  # start the audio now; the browser's request then finds it ready or in flight
+            excited = (coverage.get("insight") or {}).get("angle") in ("drama", "turning_point")
+            self._spawn(self._warm_voice(coverage["line"], coverage["language"], excited))
         await self.send({"type": "commentary", "moment": {k: moment[k] for k in ("id", "type", "clock", "title", "importance")},
                          "coverage": coverage})
         now = {"ts_ms": int(self.match_ts()), "clock": self.events[max(self.idx - 1, 0)].get("clock", moment["clock"])}

@@ -26,7 +26,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import BaseModel
@@ -57,6 +57,15 @@ def _broadcast_service() -> BroadcastService | None:
         return None
     from broadcast.agents import FoundryAgents
     return BroadcastService(FoundryAgents(), cache_file=os.getenv("TOUCHLINE_CACHE_FILE", "data/ai-cache.json"))
+
+
+def _voice_service(broadcast: BroadcastService | None):
+    """Spoken commentary (Azure AI Speech), only when the AI crew is on: it speaks the crew's lines."""
+    from broadcast.voice import VoiceService, speech_endpoint
+    endpoint = speech_endpoint()
+    if broadcast is None or not endpoint or os.getenv("TOUCHLINE_VOICE", "on") == "off":
+        return None
+    return VoiceService(endpoint, broadcast.crew.agents.credential, cache_dir=os.getenv("TOUCHLINE_VOICE_DIR", "data/voice"))
 
 
 class CompareRequest(BaseModel):
@@ -100,6 +109,8 @@ async def lifespan(_app: FastAPI):
     if not hasattr(_app.state, "broadcast"):  # tests may inject their own
         Path("data").mkdir(exist_ok=True)
         _app.state.broadcast = _broadcast_service()
+    if not hasattr(_app.state, "voice"):
+        _app.state.voice = _voice_service(_app.state.broadcast)
     async with mcp.session_manager.run():  # the MCP endpoint's own lifecycle
         yield
 
@@ -122,7 +133,8 @@ async def revalidate_app_files(request, call_next):
 
 @app.get("/api/health")
 def health() -> dict:
-    return {"ok": True, "matches": len(MATCHES), "ai": app.state.broadcast is not None}
+    return {"ok": True, "matches": len(MATCHES), "ai": app.state.broadcast is not None,
+            "voice": getattr(app.state, "voice", None) is not None}
 
 
 @app.get("/api/clubs")
@@ -162,6 +174,11 @@ def cues(match_id: str) -> list[dict]:
     return all_cues(MATCHES[match_id])
 
 
+def _feed_id(match_id: str) -> str:
+    """The id inside the event feed, which the AI cache is keyed by (playback uses it too)."""
+    return MATCHES[match_id][0]["match_id"] if match_id in MATCHES else match_id
+
+
 def _state_at_moment(events: list[dict], moment_id: str):
     """Replay the stats engine until `moment_id` fires; return (moment, snapshot, players) at that instant."""
     a = MatchAnalyzer()
@@ -188,8 +205,25 @@ async def compare(match_id: str, req: CompareRequest) -> dict:
         profiles = [ViewerProfile(persona="analyst", language="en"),
                     ViewerProfile(persona="casual", language="es", favorite_team=mine),
                     ViewerProfile(persona="casual", language="fr", favorite_team=other)]
-    coverages = await app.state.broadcast.cover_many(match_id, moment, snap, players, profiles[:4])
+    coverages = await app.state.broadcast.cover_many(_feed_id(match_id), moment, snap, players, profiles[:4])
     return {"moment": moment, "profiles": [p.model_dump() for p in profiles[:4]], "coverage": coverages}
+
+
+@app.get("/api/matches/{match_id}/voice/{moment_id}")
+async def voice(match_id: str, moment_id: str, profile: str = "analyst|en|-|-") -> Response:
+    """The commentator speaking one line the crew already wrote (and fact-checked) for this viewer."""
+    if getattr(app.state, "voice", None) is None:
+        raise HTTPException(503, "voice is not configured")
+    coverage = app.state.broadcast.cache.get(f"cover|{_feed_id(match_id)}|{moment_id}|{profile}")
+    if coverage is None:
+        raise HTTPException(404, "no commentary for this moment and viewer yet")
+    excited = (coverage.get("insight") or {}).get("angle") in ("drama", "turning_point")
+    try:
+        audio = await app.state.voice.speak(coverage["line"], coverage["language"], excited)
+    except Exception:
+        log.exception("speech synthesis failed")
+        raise HTTPException(502, "speech synthesis failed")
+    return Response(audio, media_type="audio/mpeg", headers={"Cache-Control": "public, max-age=86400"})
 
 
 @app.websocket("/ws/matches/{match_id}")
@@ -210,7 +244,7 @@ async def watch(ws: WebSocket, match_id: str, speed: float = 10.0, autoplay: boo
     except ValueError:
         profile = ViewerProfile()
     playback = Playback(MATCHES[match_id], send, speed=speed, autoplay=autoplay,
-                        broadcast=app.state.broadcast, profile=profile)
+                        broadcast=app.state.broadcast, profile=profile, voice=getattr(app.state, "voice", None))
     runner = asyncio.create_task(playback.run())
     try:
         while True:

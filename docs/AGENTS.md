@@ -56,6 +56,18 @@ Copilot, Claude, a Foundry agent, a club's own analyst bot) can query a match:
 { "mcpServers": { "touchline": { "type": "http", "url": "http://localhost:8000/mcp/" } } }
 ```
 
+## Voice
+
+`broadcast/voice.py`: the 🔊 Voice toggle has the commentator speak each line with Azure AI Speech,
+one native HD voice per language (British English, Spain Spanish, French, Brazilian Portuguese).
+HD voices pick up the emotion in the text, and drama/turning-point moments are read slightly faster.
+
+- Only verified lines are spoken: `/api/matches/{id}/voice/{moment}?profile=…` looks the line up in
+  the crew's results, so it can't be used to read arbitrary text.
+- Same keyless auth, on the Foundry resource's own Speech endpoint (no extra resource or keys).
+- Audio is generated as soon as a line is written and cached (memory + disk), so it's ready by the
+  time the browser asks, and a line is synthesized once however many fans hear it.
+
 ## Design principles
 
 - **Numbers come from code, words come from AI.** Agents only receive a slice of the stats

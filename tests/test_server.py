@@ -6,9 +6,19 @@ from broadcast.service import BroadcastService
 from server.app import app
 
 
+class FakeVoice:
+    def __init__(self):
+        self.spoken = []
+
+    async def speak(self, text, language, excited=False):
+        self.spoken.append((text, language, excited))
+        return b"ID3-fake-mp3"
+
+
 @pytest.fixture(scope="module")
 def client():
     app.state.broadcast = BroadcastService(FakeAgents())  # never call real models from tests
+    app.state.voice = FakeVoice()
     with TestClient(app) as c:  # `with` runs startup, which seeds demo matches
         yield c
 
@@ -181,3 +191,12 @@ def test_mcp_endpoint_lists_and_answers(client):
     match_id = client.get("/api/matches").json()[0]["match_id"]
     res = rpc("tools/call", {"name": "match_situation", "arguments": {"match_id": match_id, "minute": 30}}, 3)
     assert not res.get("isError") and "score" in res["content"][0]["text"]
+
+
+def test_voice_speaks_only_lines_the_crew_wrote(client):
+    key = "cover|m1|goal-1|casual|es|-|-"
+    client.app.state.broadcast.cache[key] = {"line": "¡Gol!", "language": "es", "insight": {"angle": "drama"}}
+    r = client.get("/api/matches/m1/voice/goal-1", params={"profile": "casual|es|-|-"})
+    assert r.status_code == 200 and r.headers["content-type"] == "audio/mpeg"
+    assert client.app.state.voice.spoken[-1] == ("¡Gol!", "es", True)
+    assert client.get("/api/matches/m1/voice/nope").status_code == 404  # no arbitrary text, ever

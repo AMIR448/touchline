@@ -80,7 +80,9 @@ az webapp config appsettings set -n "$APP" -g "$RG" --only-show-errors -o none -
   WEBSITES_PORT=8000 WEBSITES_CONTAINER_START_TIME_LIMIT=600 \
   "FOUNDRY_PROJECT_ENDPOINT=$FOUNDRY_PROJECT_ENDPOINT" "MODEL_FAST=${MODEL_FAST:-gpt-4.1-mini}" \
   "MODEL_REASONING=${MODEL_REASONING:-gpt-5-mini}" TOUCHLINE_AUTH=managed \
-  "EVENTHUB_NAMESPACE=$EH_NS.servicebus.windows.net" "EVENTHUB_NAME=$EH"
+  "EVENTHUB_NAMESPACE=$EH_NS.servicebus.windows.net" "EVENTHUB_NAME=$EH" \
+  WEBSITES_ENABLE_APP_SERVICE_STORAGE=true TOUCHLINE_CACHE_FILE=/home/data/ai-cache.json \
+  TOUCHLINE_VOICE_DIR=/home/data/voice TOUCHLINE_WARM=on "TOUCHLINE_DAILY_AI_RUNS=${TOUCHLINE_DAILY_AI_RUNS:-1500}"
 az webapp config container set -n "$APP" -g "$RG" --container-image-name "$IMAGE:$TAG" --only-show-errors -o none
 az webapp restart -n "$APP" -g "$RG" -o none
 

@@ -200,3 +200,18 @@ def test_voice_speaks_only_lines_the_crew_wrote(client):
     assert r.status_code == 200 and r.headers["content-type"] == "audio/mpeg"
     assert client.app.state.voice.spoken[-1] == ("¡Gol!", "es", True)
     assert client.get("/api/matches/m1/voice/nope").status_code == 404  # no arbitrary text, ever
+
+
+def test_warm_up_fills_the_cache_playback_reads():
+    import asyncio
+    from server.warm import warm_up
+    from simulator.clubs import CLUBS
+    from simulator.engine import simulate
+    events = simulate(CLUBS["kestrel"], CLUBS["marlowe"], 21)
+    service, voice = BroadcastService(FakeAgents()), FakeVoice()
+    done = asyncio.run(warm_up({"demo": events}, ["demo"], service, voice))
+    feed = events[0]["match_id"]
+    covers = [k for k in service.cache if k.startswith(f"cover|{feed}|") and k.endswith("analyst|en|-|-")]
+    recaps = [k for k in service.cache if k.startswith(f"recap|{feed}|")]
+    assert done > 10 and covers and len(recaps) == 4  # HT + FT, for both default viewers
+    assert voice.spoken  # audio pre-generated too

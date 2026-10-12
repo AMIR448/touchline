@@ -166,3 +166,33 @@ def test_voice_ssml_is_escaped_and_native():
     from broadcast.voice import ssml
     doc = ssml("Kestrel <3 & Marlowe", "fr", excited=True)
     assert "fr-FR-Remy" in doc and "&lt;3 &amp;" in doc and "prosody" in doc
+
+
+def test_daily_budget_caps_fresh_runs_but_not_cached_ones(goal):
+    from datetime import datetime, timedelta, timezone
+    from broadcast.limits import DailyBudget
+    moment, snap, players = goal
+    day = [datetime(2026, 10, 12, tzinfo=timezone.utc)]
+    agents = FakeAgents()
+    service = BroadcastService(agents, budget=DailyBudget(1, now=lambda: day[0]))
+
+    async def run():
+        first = await service.cover("m1", moment, snap, players, ViewerProfile())
+        again = await service.cover("m1", moment, snap, players, ViewerProfile())  # cached: free
+        other = await service.cover("m1", moment, snap, players, ViewerProfile(language="es"))  # over budget
+        day[0] += timedelta(days=1)
+        tomorrow = await service.cover("m1", moment, snap, players, ViewerProfile(language="es"))
+        return first, again, other, tomorrow
+    first, again, other, tomorrow = asyncio.run(run())
+    assert first["source"] == "ai" and again == first
+    assert other["source"] == "fallback" and other["trace"][0]["agent"] == "budget"
+    assert tomorrow["source"] == "ai"
+
+
+def test_rate_limiter_window():
+    from broadcast.limits import RateLimiter
+    t = [0.0]
+    rl = RateLimiter(2, 600, clock=lambda: t[0])
+    assert rl.allow("a") and rl.allow("a") and not rl.allow("a") and rl.allow("b")
+    t[0] = 601
+    assert rl.allow("a")

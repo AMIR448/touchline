@@ -40,11 +40,13 @@ MAX_QUESTION_CHARS = 300
 
 class Playback:
     def __init__(self, events: list[dict], send: Send, speed: float = 10.0, autoplay: bool = True,
-                 broadcast=None, profile: ViewerProfile | None = None, voice=None):
+                 broadcast=None, profile: ViewerProfile | None = None, voice=None,
+                 allow_question: Callable[[], bool] | None = None):
         self.events = events
         self.match_id = events[0]["match_id"]
         self.broadcast = broadcast  # BroadcastService or None (AI off)
         self.voice = voice  # VoiceService or None: pre-synthesizes lines so the commentator speaks sooner
+        self.allow_question = allow_question  # per-visitor rate limit for "Ask the match"
         self.profile = profile or ViewerProfile()
         self.ai_tasks: set[asyncio.Task] = set()
         self.qa_tasks: set[asyncio.Task] = set()  # fan questions survive a seek, unlike commentary
@@ -240,6 +242,9 @@ class Playback:
             return
         if self.qa_tasks:
             await self.send({"type": "error", "message": "one question at a time"})
+            return
+        if self.allow_question and not self.allow_question():
+            await self.send({"type": "error", "message": "That's a lot of questions! Try again in a few minutes."})
             return
         snapshot = self.analyzer.snapshot(max_moments=1000)  # frozen now; play continues meanwhile
         tools = MatchTools(snapshot, self._players())

@@ -33,6 +33,7 @@ from pydantic import BaseModel
 
 from analytics.analyzer import MatchAnalyzer
 from analytics.graphics import all_cues
+from broadcast.limits import DailyBudget, RateLimiter
 from broadcast.models import ViewerProfile
 from broadcast.service import BroadcastService
 from simulator.clubs import CLUBS
@@ -49,6 +50,21 @@ MATCHES: dict[str, list[dict]] = {}
 log = logging.getLogger("touchline")
 
 
+def _writable(folder: Path) -> Path:
+    """`folder` if we can write there (e.g. App Service's persistent /home), else the local data/ folder."""
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        probe = folder / ".write-test"
+        probe.write_text("ok")
+        probe.unlink()
+        return folder
+    except OSError:
+        log.warning("can't write to %s; using data/ (not persistent)", folder)
+        fallback = Path("data")
+        fallback.mkdir(exist_ok=True)
+        return fallback
+
+
 def _broadcast_service() -> BroadcastService | None:
     """The AI crew, if configured. Without a Foundry endpoint (or with TOUCHLINE_AI=off) the app
     still works: viewers just get the stats engine's moment titles instead of AI commentary."""
@@ -56,7 +72,20 @@ def _broadcast_service() -> BroadcastService | None:
         log.warning("AI commentary disabled (set FOUNDRY_PROJECT_ENDPOINT to enable)")
         return None
     from broadcast.agents import FoundryAgents
-    return BroadcastService(FoundryAgents(), cache_file=os.getenv("TOUCHLINE_CACHE_FILE", "data/ai-cache.json"))
+    cache_file = _writable(Path(os.getenv("TOUCHLINE_CACHE_FILE", "data/ai-cache.json")).parent) / "ai-cache.json"
+    return BroadcastService(FoundryAgents(), cache_file=cache_file,
+                            budget=DailyBudget(int(os.getenv("TOUCHLINE_DAILY_AI_RUNS", "1500"))))
+
+
+ASK_LIMIT = RateLimiter(limit=int(os.getenv("TOUCHLINE_ASK_PER_10MIN", "10")), window_s=600)
+
+
+def _client_ip(ws: WebSocket) -> str:
+    """The visitor's address. Behind Azure's front end it's the first X-Forwarded-For entry (may carry a port)."""
+    forwarded = ws.headers.get("x-forwarded-for", "").split(",")[0].strip()
+    if forwarded.count(":") == 1:  # "1.2.3.4:5678"; IPv6 addresses have more colons
+        forwarded = forwarded.split(":")[0]
+    return forwarded or (ws.client.host if ws.client else "unknown")
 
 
 def _voice_service(broadcast: BroadcastService | None):
@@ -65,7 +94,8 @@ def _voice_service(broadcast: BroadcastService | None):
     endpoint = speech_endpoint()
     if broadcast is None or not endpoint or os.getenv("TOUCHLINE_VOICE", "on") == "off":
         return None
-    return VoiceService(endpoint, broadcast.crew.agents.credential, cache_dir=os.getenv("TOUCHLINE_VOICE_DIR", "data/voice"))
+    voice_dir = _writable(Path(os.getenv("TOUCHLINE_VOICE_DIR", "data/voice")))
+    return VoiceService(endpoint, broadcast.crew.agents.credential, cache_dir=voice_dir)
 
 
 class CompareRequest(BaseModel):
@@ -131,23 +161,30 @@ async def lifespan(_app: FastAPI):
     """Start the ingest stage, then a few ready-made matches so the app has something to show immediately."""
     global INGEST
     await _start_ingest()
+    demo = []
     for home, away, seed, scenario in [("kestrel", "marlowe", 21, "standard"),
                                        ("marlowe", "portellis", 21, "late_comeback"),
                                        ("portellis", "ashvale", 8, "red_card")]:
         req = NewMatch(home=home, away=away, seed=seed, scenario=scenario)
         try:
-            await _create(req)
+            demo.append(await _create(req))
         except Exception:
             log.exception("demo match via Event Hubs failed; falling back to in-process")
             INGEST = None
-            await _create(req)
+            demo.append(await _create(req))
     if not hasattr(_app.state, "broadcast"):  # tests may inject their own
         Path("data").mkdir(exist_ok=True)
         _app.state.broadcast = _broadcast_service()
     if not hasattr(_app.state, "voice"):
         _app.state.voice = _voice_service(_app.state.broadcast)
+    warming = None
+    if _app.state.broadcast and os.getenv("TOUCHLINE_WARM", "off") == "on":  # on in Azure: see server/warm.py
+        from .warm import warm_up
+        warming = asyncio.create_task(warm_up(MATCHES, demo, _app.state.broadcast, _app.state.voice))
     async with mcp.session_manager.run():  # the MCP endpoint's own lifecycle
         yield
+    if warming:
+        warming.cancel()
     if INGEST:
         await INGEST.close()
 
@@ -172,7 +209,8 @@ async def revalidate_app_files(request, call_next):
 def health() -> dict:
     return {"ok": True, "matches": len(MATCHES), "ai": app.state.broadcast is not None,
             "ingest": "event-hubs" if INGEST else "in-process",
-            "voice": getattr(app.state, "voice", None) is not None}
+            "voice": getattr(app.state, "voice", None) is not None,
+            **(app.state.broadcast.budget.status() if app.state.broadcast and app.state.broadcast.budget else {})}
 
 
 @app.get("/api/clubs")
@@ -282,7 +320,8 @@ async def watch(ws: WebSocket, match_id: str, speed: float = 10.0, autoplay: boo
     except ValueError:
         profile = ViewerProfile()
     playback = Playback(MATCHES[match_id], send, speed=speed, autoplay=autoplay,
-                        broadcast=app.state.broadcast, profile=profile, voice=getattr(app.state, "voice", None))
+                        broadcast=app.state.broadcast, profile=profile, voice=getattr(app.state, "voice", None),
+                        allow_question=lambda ip=_client_ip(ws): ASK_LIMIT.allow(ip))
     runner = asyncio.create_task(playback.run())
     try:
         while True:

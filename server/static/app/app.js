@@ -18,7 +18,8 @@ const AGENT = { analyst: ["🧠", "Analyst", "Explains why the moment matters, f
   producer: ["🎛️", "Producer", "Tailors the line to this viewer"],
   recap_writer: ["📰", "Recap writer", "Tells the story of the match"],
   recap_fact_checker: ["✅", "Fact-checker", "Checks the recap"],
-  match_qa: ["🔎", "Match Q&A", "Decides which stats to look up, then answers"] };
+  match_qa: ["🔎", "Match Q&A", "Decides which stats to look up, then answers"],
+  budget: ["⛔", "Budget guard", "Today's AI budget for this demo is used up"] };
 const STUDIO_PROFILE = { persona: "analyst", language: "en", favorite_team: null, favorite_player: null };
 const profileKey = p => `${p.persona}|${p.language}|${p.favorite_team || "-"}|${p.favorite_player || "-"}`;
 const icon = m => (m.type === "card" && m.importance < 0.5 ? "🟨" : ICON[m.type] || "•");

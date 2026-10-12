@@ -15,16 +15,19 @@ from typing import Any
 
 from .agents import AgentPool
 from .crew import BroadcastCrew
+from .limits import DailyBudget
 from .match_tools import MatchTools
-from .models import ViewerProfile
+from .models import Coverage, Step, ViewerProfile
 from .qa import MatchQA
 
 log = logging.getLogger("touchline.broadcast")
 
 
 class BroadcastService:
-    def __init__(self, agents: AgentPool, max_concurrent: int = 6, cache_file: str | Path | None = None):
+    def __init__(self, agents: AgentPool, max_concurrent: int = 6, cache_file: str | Path | None = None,
+                 budget: DailyBudget | None = None):
         self.crew = BroadcastCrew(agents)
+        self.budget = budget
         self.qa = MatchQA(agents)
         self.limit = asyncio.Semaphore(max_concurrent)
         self.cache: dict[str, Any] = {}
@@ -60,21 +63,36 @@ class BroadcastService:
             tmp.write_text(json.dumps(self.cache, ensure_ascii=False))
             tmp.replace(self.cache_file)
 
+    def _fresh_run_allowed(self, key: str) -> bool:
+        """Cached or in-flight results are free; a new AI run spends from today's budget."""
+        return key in self.cache or key in self.inflight or self.budget is None or self.budget.take()
+
     async def cover(self, match_id: str, moment: dict, snapshot: dict, players: dict[str, dict],
                     profile: ViewerProfile) -> dict:
+        key = f"cover|{match_id}|{moment['id']}|{profile.key()}"
+        if not self._fresh_run_allowed(key):
+            return _budget_fallback(moment, profile)
+
         async def make():
             results = await self.crew.cover(moment, snapshot, players, [profile])
             return results[0].to_dict()
-        return await self._once(f"cover|{match_id}|{moment['id']}|{profile.key()}", make)
+        return await self._once(key, make)
 
     async def recap(self, match_id: str, moment: dict, snapshot: dict, moments: list[dict],
                     players: dict[str, dict], profile: ViewerProfile) -> dict:
+        key = f"recap|{match_id}|{moment['id']}|{profile.key()}"
+        if not self._fresh_run_allowed(key):
+            return {"recap": None, "trace": [vars(Step("budget", 0, BUDGET_NOTE))]}
+
         async def make():
             return await self.crew.recap(snapshot, moments, players, profile)
-        return await self._once(f"recap|{match_id}|{moment['id']}|{profile.key()}", make)
+        return await self._once(key, make)
 
     async def ask(self, question: str, tools: MatchTools, profile: ViewerProfile) -> dict:
         """Fan questions are never cached: the answer depends on the minute it was asked."""
+        if self.budget and not self.budget.take():
+            return {"answer": "The AI crew has reached today's limit on this demo. Please try again tomorrow.",
+                    "follow_ups": [], "source": "fallback", "tools": [], "trace": [vars(Step("budget", 0, BUDGET_NOTE))]}
         async with self.limit:
             return await self.qa.ask(question, tools, profile)
 
@@ -83,9 +101,20 @@ class BroadcastService:
         """Several viewers at once: one Analyst + Commentator pass, then the Producer fans out in parallel."""
         keys = [f"cover|{match_id}|{moment['id']}|{p.key()}" for p in profiles]
         missing = [p for p, k in zip(profiles, keys) if k not in self.cache]
+        if missing and self.budget and not self.budget.take():
+            return [self.cache.get(k) or _budget_fallback(moment, p) for p, k in zip(profiles, keys)]
         if missing:
             async with self.limit:
                 for c in await self.crew.cover(moment, snapshot, players, missing):
                     self.cache[f"cover|{match_id}|{moment['id']}|{c.profile_key}"] = c.to_dict()
             self._persist()
         return [self.cache[k] for k in keys]
+
+
+BUDGET_NOTE = "daily AI budget reached: the stats engine's verified text is used instead"
+
+
+def _budget_fallback(moment: dict, profile: ViewerProfile) -> dict:
+    """Not cached, so the real commentary is written once the budget resets."""
+    return Coverage(moment["id"], profile.key(), moment["title"][:80], moment["title"] + ".", "en", "fallback",
+                    None, [Step("budget", 0, BUDGET_NOTE)]).to_dict()

@@ -21,6 +21,7 @@ const AGENT = { analyst: ["🧠", "Analyst", "Explains why the moment matters, f
   match_qa: ["🔎", "Match Q&A", "Decides which stats to look up, then answers"],
   budget: ["⛔", "Budget guard", "Today's AI budget for this demo is used up"] };
 const profileKey = p => `${p.persona}|${p.language}|${p.favorite_team || "-"}|${p.favorite_player || "-"}`;
+const profileFromKey = k => { const [persona, language, t, pl] = k.split("|"); return { persona, language, favorite_team: t === "-" ? null : t, favorite_player: pl === "-" ? null : pl }; };
 const icon = m => (m.type === "card" && m.importance < 0.5 ? "🟨" : ICON[m.type] || "•");
 const minuteOf = clock => parseInt(clock || "0", 10);
 // Mirror of broadcast/relevance.py: which moments the crew covers for this viewer.
@@ -92,7 +93,8 @@ function reduce(s, msg, key) {
     }
     case "moment": {
       const m = msg.moment;
-      const lower = m.importance >= 0.45 ? { moment: m, caption: m.title, line: null, pending: true, until: now + 12000 } : s.lower;
+      // only promise a caption ("the crew is on it") when the crew really writes this moment for this viewer
+      const lower = m.importance >= 0.45 && crewCovers(profileFromKey(key), m) ? { moment: m, caption: m.title, line: null, pending: true, until: now + 12000 } : s.lower;
       return { ...s, moments: [{ ...m, at: now }, ...s.moments], lower };
     }
     case "commentary": {
@@ -351,7 +353,7 @@ function Pitch({ s, colors }) {
         ctx.shadowColor = "rgba(0,0,0,.5)"; ctx.shadowBlur = 6;
         ctx.fillStyle = col; ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
         ctx.shadowBlur = 0;
-        ctx.lineWidth = onBall ? 2.5 : 1.2; ctx.strokeStyle = onBall ? "#ffffff" : "rgba(0,0,0,.35)"; ctx.stroke();
+        ctx.lineWidth = onBall ? 2.5 : 1.5; ctx.strokeStyle = onBall ? "#ffffff" : "rgba(255,255,255,.75)"; ctx.stroke();  // reads on any kit colour
         if (tg.gk) { ctx.lineWidth = 2; ctx.strokeStyle = colors[tg.team]; ctx.beginPath(); ctx.arc(x, y, r - 1.5, 0, Math.PI * 2); ctx.stroke(); }
         ctx.fillStyle = inkOn(col); ctx.fillText(String(who.number), x, y + 0.5);
       }

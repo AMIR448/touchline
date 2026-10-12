@@ -655,9 +655,30 @@ const cueText = c => {
   return JSON.stringify(p);
 };
 
+// Results of scripts/eval_trust.py: the crew run over fresh matches, every shown line re-checked.
+function TrustReport() {
+  const [t, setT] = useState(null);
+  useEffect(() => { api("/static/app/trust.json").then(setT).catch(() => {}); }, []);
+  if (!t) return null;
+  const c = t.commentary;
+  const tiles = [
+    [`${t.unverified_ai_lines_shown} / ${t.ai_lines_audited}`, "AI lines shown that fail an independent re-check"],
+    [`${c.first_draft_passed_pct}%`, "commentary passed on the first draft"],
+    [`${(c.fixed_by_rewrite_pct + c.safe_fallback_pct).toFixed(1)}%`, "caught, then rewritten or replaced"],
+    [`${t.ask.verified_answers_pct}%`, `of ${t.ask.questions} fan questions answered and verified`],
+    [`${c.crew_seconds_p50}s`, "crew time per moment (median)"],
+    [`$${t.cost_per_match_usd}`, "AI cost per match, two viewers"],
+  ];
+  return html`<section><h3>Measured trust <span class="right">${t.matches} fresh matches · ${t.date}</span></h3>
+    <div class="trust">${tiles.map(([v, l]) => html`<div><b>${v}</b><span>${l}</span></div>`)}</div>
+    <div class="muted" style="font-size:12px;margin-top:8px">From <code>scripts/eval_trust.py</code>: the real crew, no cache. Details in docs/TRUST.md.</div>
+  </section>`;
+}
+
 function ControlRoom({ s, matchId }) {
   const ai = s.lastAI;
   return html`<div class="pane">
+    <${TrustReport} />
     <section><h3>Last crew run <span class="right">Agent Framework · Foundry</span></h3>
       ${ai ? html`<div class="muted" style="font-size:12px;margin-bottom:8px">${ai.moment.clock} · ${ai.moment.title} · ${(ai.trace.reduce((a, x) => a + x.ms, 0) / 1000).toFixed(1)}s</div>
         <${TraceSteps} trace=${ai.trace} />`

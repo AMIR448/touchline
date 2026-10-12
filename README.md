@@ -26,6 +26,8 @@ Judges watch a demo of under 2 minutes, then click a public link to try it thems
 
 Rule of thumb: **numbers come from code, words come from AI.** Agents never invent a stat;
 they explain stats the engine computed, and cite the event IDs behind them.
+How well that holds is measured, not claimed: see **[docs/TRUST.md](docs/TRUST.md)** (the real crew over
+fresh matches, every shown line independently re-checked).
 
 ## Architecture on Azure
 

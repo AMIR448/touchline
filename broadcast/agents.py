@@ -52,6 +52,7 @@ class FoundryAgents:
             "reasoning": FoundryChatClient(project_endpoint=endpoint, credential=self.credential,
                                            model=reasoning_model or os.getenv("MODEL_REASONING", "gpt-5-mini")),
         }
+        self.usage = {"fast": [0, 0], "reasoning": [0, 0]}  # model kind -> [input tokens, output tokens]
         self.agents = {
             role: Agent(self.clients[kind], instructions, name=role.title(), default_options=opts)
             for role, (kind, instructions, opts) in self.ROLES.items() if instructions
@@ -64,9 +65,16 @@ class FoundryAgents:
         else:
             agent = self.agents[role]
         response = await asyncio.wait_for(agent.run(prompt, options={"response_format": schema}), CALL_TIMEOUT_S)
+        self._count(self.ROLES[role][0], response)
         if response.value is None:
             raise ValueError(f"{role} returned no structured output")
         return response.value
+
+    def _count(self, kind: str, response) -> None:
+        u = response.usage_details or {}
+        get = u.get if isinstance(u, dict) else (lambda k: getattr(u, k, None))
+        self.usage[kind][0] += get("input_token_count") or 0
+        self.usage[kind][1] += get("output_token_count") or 0
 
 
     async def ask(self, prompt: str, functions: list[Callable[..., Any]], instructions: str) -> Answer:
@@ -76,6 +84,7 @@ class FoundryAgents:
         agent = self._Agent(self.clients["fast"], instructions, name="MatchQA",
                             tools=[tool(f) for f in functions], default_options={"temperature": 0.3})
         response = await asyncio.wait_for(agent.run(prompt, options={"response_format": Answer}), CALL_TIMEOUT_S)
+        self._count("fast", response)
         if response.value is None:
             raise ValueError("match Q&A returned no structured output")
         return response.value

@@ -204,6 +204,12 @@ button.chip { cursor: pointer; } button.chip:hover { filter: brightness(1.25); }
 .recap p { margin: 0 0 10px; font-size: 15px; }
 .potm { display: flex; gap: 10px; align-items: center; padding: 10px; border-radius: 10px; background: var(--panel2); }
 
+/* ---------- trust report ---------- */
+.trust { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.trust div { background: var(--panel2); border: 1px solid var(--line); border-radius: 10px; padding: 9px 11px; }
+.trust b { display: block; font: 800 22px/1.1 var(--display); color: var(--ai); }
+.trust span { font-size: 11px; color: var(--muted); line-height: 1.3; display: block; margin-top: 2px; }
+
 /* ---------- voice ---------- */
 .btn.voice.on { border-color: var(--ai); color: var(--ai); box-shadow: 0 0 0 3px var(--ai-dim); }
 .eq { display: inline-flex; align-items: flex-end; gap: 2px; height: .8em; margin-right: .45em; vertical-align: baseline; }

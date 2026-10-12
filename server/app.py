@@ -114,6 +114,7 @@ def _summary(match_id: str) -> dict:
     events = MATCHES[match_id]
     d = events[0]["details"]
     return {"match_id": match_id, "home": d["home"]["name"], "away": d["away"]["name"],
+            "home_id": d["home"]["id"], "away_id": d["away"]["id"],
             "scenario": d["scenario"], "seed": d["seed"], "final_score": events[-1]["details"]["score"]}
 
 

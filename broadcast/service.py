@@ -36,6 +36,10 @@ class BroadcastService:
         if self.cache_file and self.cache_file.exists():
             self.cache = json.loads(self.cache_file.read_text())
 
+    def lookup(self, kind: str, match_id: str, moment_id: str, profile: ViewerProfile) -> Any:
+        """An already-written result, or None. Never calls a model."""
+        return self.cache.get(f"{kind}|{match_id}|{moment_id}|{profile.key()}")
+
     async def _once(self, key: str, make) -> Any:
         if key in self.cache:
             return self.cache[key]
@@ -46,8 +50,9 @@ class BroadcastService:
         try:
             async with self.limit:
                 result = await make()
-            self.cache[key] = result
-            self._persist()
+            if _keepable(result):
+                self.cache[key] = result
+                self._persist()
             future.set_result(result)
             return result
         except BaseException as e:
@@ -104,11 +109,24 @@ class BroadcastService:
         if missing and self.budget and not self.budget.take():
             return [self.cache.get(k) or _budget_fallback(moment, p) for p, k in zip(profiles, keys)]
         if missing:
+            fresh = {}
             async with self.limit:
                 for c in await self.crew.cover(moment, snapshot, players, missing):
-                    self.cache[f"cover|{match_id}|{moment['id']}|{c.profile_key}"] = c.to_dict()
+                    fresh[c.profile_key] = c.to_dict()
+                    if _keepable(fresh[c.profile_key]):
+                        self.cache[f"cover|{match_id}|{moment['id']}|{c.profile_key}"] = fresh[c.profile_key]
             self._persist()
+            return [self.cache.get(k) or fresh[p.key()] for p, k in zip(profiles, keys)]
         return [self.cache[k] for k in keys]
+
+
+def _keepable(result: Any) -> bool:
+    """Don't keep results where a writer crashed (e.g. a rate limit): the viewer got a fallback this time,
+    but the next viewer should get a real attempt, not a cached failure."""
+    if not isinstance(result, dict):
+        return True
+    return not any(s.get("agent") in ("commentator", "producer", "recap_writer") and s.get("note", "").startswith("failed")
+                   for s in result.get("trace", []))
 
 
 BUDGET_NOTE = "daily AI budget reached: the stats engine's verified text is used instead"

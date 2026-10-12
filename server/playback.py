@@ -98,6 +98,7 @@ class Playback:
                 await self.send({"type": "error", "message": f"bad profile: {e.errors()[0]['msg']}"})
                 return
             await self.send({"type": "profile", "profile": self.profile.model_dump()})
+            await self._resend_written()
         elif cmd == "ask":
             await self._ask(msg)
             return
@@ -228,6 +229,22 @@ class Playback:
         task = asyncio.create_task(coro)
         self.ai_tasks.add(task)
         task.add_done_callback(self.ai_tasks.discard)
+
+    async def _resend_written(self) -> None:
+        """After a language/club/style change, everything already written for the new profile is sent
+        straight away, so the whole feed switches at once instead of only new moments."""
+        if not self.broadcast:
+            return
+        for moment in self.analyzer.snapshot(max_moments=1000)["moments"]:
+            if wants_commentary(self.profile, moment):
+                coverage = self.broadcast.lookup("cover", self.match_id, moment["id"], self.profile)
+                if coverage:
+                    await self.send({"type": "commentary", "coverage": coverage, "replay": True,  # fills the feed silently
+                                     "moment": {k: moment[k] for k in ("id", "type", "clock", "title", "importance")}})
+            elif wants_recap(moment):
+                recap = self.broadcast.lookup("recap", self.match_id, moment["id"], self.profile)
+                if recap and recap.get("recap"):
+                    await self.send({"type": "recap", "moment_id": moment["id"], **recap})
 
     async def _ask(self, msg: dict[str, Any]) -> None:
         """A fan question, answered from the match as it stands right now (no spoilers)."""

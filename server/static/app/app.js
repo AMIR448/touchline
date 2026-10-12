@@ -20,7 +20,6 @@ const AGENT = { analyst: ["🧠", "Analyst", "Explains why the moment matters, f
   recap_fact_checker: ["✅", "Fact-checker", "Checks the recap"],
   match_qa: ["🔎", "Match Q&A", "Decides which stats to look up, then answers"],
   budget: ["⛔", "Budget guard", "Today's AI budget for this demo is used up"] };
-const STUDIO_PROFILE = { persona: "analyst", language: "en", favorite_team: null, favorite_player: null };
 const profileKey = p => `${p.persona}|${p.language}|${p.favorite_team || "-"}|${p.favorite_player || "-"}`;
 const icon = m => (m.type === "card" && m.importance < 0.5 ? "🟨" : ICON[m.type] || "•");
 const minuteOf = clock => parseInt(clock || "0", 10);
@@ -94,12 +93,13 @@ function reduce(s, msg, key) {
     case "moment": {
       const m = msg.moment;
       const lower = m.importance >= 0.45 ? { moment: m, caption: m.title, line: null, pending: true, until: now + 12000 } : s.lower;
-      return { ...s, moments: [m, ...s.moments], lower };
+      return { ...s, moments: [{ ...m, at: now }, ...s.moments], lower };
     }
     case "commentary": {
       const c = msg.coverage;
       if (c.profile_key !== key) return s;
       const moments = s.moments.map(m => (m.id === msg.moment.id ? { ...m, ai: c } : m));
+      if (msg.replay) return { ...s, moments };  // re-sent after a profile change: refill the feed quietly
       const m = moments.find(x => x.id === msg.moment.id) || msg.moment;
       return { ...s, moments, lower: { moment: m, caption: c.caption, line: c.line, ai: c, until: now + 10000 }, lastAI: { ...c, moment: msg.moment } };
     }
@@ -109,10 +109,12 @@ function reduce(s, msg, key) {
       const d = msg.event.display;
       const last = d ? { ...d, team: msg.event.team_id, player: msg.event.player_id, type: msg.event.type } : null;
       return { ...s, trail: last ? [last] : [], last, lineups: msg.lineups || s.lineups, badges: [], banner: null, lower: null, cues: [],
-        recap: null, snapshot: msg.state, moments: [...msg.state.moments].reverse().map(m => ({ ...m, past: true })), clock: msg.event.clock };
+        recap: null, snapshot: msg.state, moments: [...msg.state.moments].reverse().map((m, i) => ({ ...m, past: true, at: -i })), clock: msg.event.clock };
     }
     case "recap":
       return msg.profile_key === key && msg.recap ? { ...s, recap: msg } : s;
+    case "profile":  // new language/club/style: drop lines written for the old one; the server re-sends what it has
+      return { ...s, moments: s.moments.map(m => ({ ...m, ai: undefined, past: true })), recap: null, lower: null };
     case "answer":
       return { ...s, qa: s.qa.map(q => (q.id === msg.id ? { ...q, ...msg, pending: false } : q)) };
     case "error":
@@ -130,7 +132,7 @@ function useMatch(matchId, profile) {
   useEffect(() => {
     if (!matchId) return;
     setS(initial());
-    const q = new URLSearchParams({ speed: 10, persona: profile.persona, language: profile.language });
+    const q = new URLSearchParams({ speed: 10, autoplay: true, persona: profile.persona, language: profile.language });
     if (profile.favorite_team) q.set("team", profile.favorite_team);
     if (profile.favorite_player) q.set("player", profile.favorite_player);
     const sock = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/matches/${matchId}?${q}`);
@@ -142,7 +144,7 @@ function useMatch(matchId, profile) {
   useEffect(() => { send({ cmd: "profile", ...profile }); }, [keyRef.current]);
   const ask = useCallback(question => {
     const id = "q" + Date.now();
-    setS(prev => ({ ...prev, qa: [...prev.qa, { id, question, pending: true, clock: prev.clock }] }));
+    setS(prev => ({ ...prev, qa: [...prev.qa, { id, question, pending: true, clock: prev.clock, at: performance.now() }] }));
     send({ cmd: "ask", id, question });
   }, []);
   return [s, send, ask];
@@ -467,9 +469,6 @@ function StatRow({ label, hv, av, hc, ac, lowWins, compact }) {
 }
 
 const STRIP = [["possession_pct", "Possession %"], ["shots", "Shots"], ["xg", "xG"], ["box_entries", "Box entries"], ["field_tilt_pct", "Field tilt %"]];
-const DESK = [["possession_pct", "Possession %"], ["shots", "Shots"], ["on_target", "On target"], ["xg", "xG"], ["big_chances", "Big chances"],
-  ["box_entries", "Box entries"], ["field_tilt_pct", "Field tilt %"], ["pass_accuracy_pct", "Pass accuracy %"],
-  ["progressive_passes", "Progressive passes"], ["ppda", "PPDA · lower = more pressing", true], ["corners", "Corners"], ["fouls", "Fouls", true]];
 
 function StatList({ s, colors, keys, compact }) {
   const snap = s.snapshot, meta = s.meta;
@@ -508,134 +507,113 @@ function Momentum({ s, colors, H = 90, legend = true }) {
     <span><i style=${{ background: colors[meta.away.id] }}></i>${meta.away.name} on top</span></div>`}`;
 }
 
-function XgRace({ s, colors }) {
-  const snap = s.snapshot, meta = s.meta, max = s.durationMin;
-  if (!snap || !meta) return null;
-  const tl = snap.xg_timeline, W = 340, H = 100;
-  const top = Math.max(1, ...tl.map(p => Math.max(p[meta.home.id], p[meta.away.id]))) * 1.1;
-  const line = id => tl.map((p, i) => `${((i / Math.max(max, 1)) * W).toFixed(1)},${(H - (p[id] / top) * (H - 8)).toFixed(1)}`).join(" ");
-  const goals = snap.moments.filter(m => m.type === "goal");
-  return html`<svg viewBox="0 0 ${W} ${H}" width="100%" height=${H} preserveAspectRatio="none" role="img" aria-label="xG race">
-    <line x1="0" x2=${W} y1=${H - 0.5} y2=${H - 0.5} stroke="#283654" />
-    <polyline points=${line(meta.home.id)} fill="none" stroke=${colors[meta.home.id]} stroke-width="2.5" vector-effect="non-scaling-stroke" />
-    <polyline points=${line(meta.away.id)} fill="none" stroke=${colors[meta.away.id]} stroke-width="2.5" vector-effect="non-scaling-stroke" />
-    ${goals.map(g => html`<text x=${(minuteOf(g.clock) / max) * W} y="12" font-size="11" text-anchor="middle">⚽</text>`)}
-  </svg>
-  <div class="legend"><span><i style=${{ background: colors[meta.home.id] }}></i>${meta.home.short} ${snap.teams[meta.home.id].xg} xG</span>
-    <span><i style=${{ background: colors[meta.away.id] }}></i>${meta.away.short} ${snap.teams[meta.away.id].xg} xG</span></div>`;
-}
+// ------------------------------------------------------------------ the live feed: commentary + your questions
 
-function Chaos({ snap }) {
-  const v = snap ? snap.control_chaos.value : 0, label = snap ? snap.control_chaos.label : "–";
-  const ang = Math.PI * (1 - v / 100), cx = 60, cy = 56, r = 46;
-  const color = v < 35 ? "#7fd1ff" : v < 60 ? "#ffcf5c" : "#ff8a5c";
-  return html`<div class="gauge">
-    <svg width="120" height="66" viewBox="0 0 120 66" aria-label="control vs chaos">
-      <path d="M14 56 A46 46 0 0 1 106 56" fill="none" stroke="#1d2842" stroke-width="10" stroke-linecap="round" />
-      <path d=${`M14 56 A46 46 0 0 1 ${cx + r * Math.cos(ang)} ${cy - r * Math.sin(ang)}`} fill="none" stroke=${color} stroke-width="10" stroke-linecap="round" />
-    </svg>
-    <div><div class="big" style=${{ color }}>${v}</div><div class="lab">${label}</div>
-      <div class="muted" style="font-size:12px">0 calm build-up · 100 end-to-end chaos</div></div></div>`;
-}
-
-function Analysis({ s, colors }) {
-  const why = s.lastAI && s.lastAI.insight && s.lastAI.insight.why_it_matters;
-  return html`<div class="pane">
-    <section><h3>🧠 Why it matters ${s.lastAI && html`<span class="right">${s.lastAI.moment.clock}</span>`}</h3>
-      ${why ? html`<p class="why">${why}</p>` : html`<p class="why empty">The Analyst agent explains each key moment here.</p>`}</section>
-    <section><h3>Momentum <span class="right">threat, last ~10 min</span></h3><${Momentum} s=${s} colors=${colors} /></section>
-    <section><h3>xG race</h3><${XgRace} s=${s} colors=${colors} /></section>
-    <section><h3>Control vs chaos <span class="right">last 5 min</span></h3><${Chaos} snap=${s.snapshot} /></section>
-    <section><h3>All stats</h3><${StatList} s=${s} colors=${colors} keys=${DESK} /></section>
-  </div>`;
-}
-
-// ------------------------------------------------------------------ commentary feed
+const TAGLINE = { standard: "Clash of styles", late_comeback: "The late comeback", red_card: "Down to ten men",
+  high_press: "A pressing war", dominant_home: "One-way traffic" };
+const tagline = sc => TAGLINE[sc] || (sc || "").replace(/_/g, " ");
 
 function MomentCard({ m, send, onCompare, onProof, yourTeam, waiting, speaking }) {
   const [open, setOpen] = useState(false);
   const ai = m.ai;
   const replay = e => { e && e.preventDefault(); send({ cmd: "seek", minute: Math.max(0, minuteOf(m.clock) - 1) }); };
-  return html`<div class=${"fc" + (m.importance >= 0.6 ? " big" : "")}>
-    <div class="h"><span>${icon(m)}</span><span>${m.clock} · ${m.type.replace(/_/g, " ")}</span>
-      ${yourTeam && m.team_id === yourTeam && html`<span class="chip you">your team</span>`}
+  return html`<div class=${"fc" + (m.importance >= 0.6 ? " big" : "") + (yourTeam && m.team_id === yourTeam ? " mine" : "")}>
+    <div class="h"><span class="ic">${icon(m)}</span><span>${m.clock}</span>
       <span class="spacer"></span>${speaking === m.id && html`<${Eq} />`}<${ProofChip} ai=${ai} onProof=${a => onProof(a, m)} /></div>
     <div class="cap">${ai ? ai.caption : m.title}</div>
     ${ai ? html`<p>${ai.line}</p>`
-      : waiting && m.past ? html`<p><span class="muted">You skipped past this one. </span><a href="#" onClick=${replay}>Replay it ↺</a></p>`
-      : waiting ? html`<p class="muted">The crew is writing this…</p>` : null}
-    <div class="acts">
-      <button class="btn sm ghost" onClick=${replay}>↺ Replay</button>
-      ${ai && ai.insight && ai.insight.why_it_matters && html`<button class="btn sm ghost" onClick=${() => setOpen(!open)}>${open ? "Hide why" : "Why?"}</button>`}
-      ${ai && onCompare && html`<button class="btn sm ghost" onClick=${() => onCompare(m)}>Other fans' view ↔</button>`}
-    </div>
+      : waiting && m.past ? html`<p class="muted"><a href="#" onClick=${replay}>Replay this moment ↺</a></p>`
+      : waiting ? html`<p class="muted writing">The crew is writing this<span class="dots"><i></i><i></i><i></i></span></p>` : null}
+    ${ai && html`<div class="acts">
+      ${ai.insight && ai.insight.why_it_matters && html`<button class="btn sm ghost" onClick=${() => setOpen(!open)}>${open ? "Hide" : "Why?"}</button>`}
+      ${onCompare && html`<button class="btn sm ghost" onClick=${() => onCompare(m)}>Other fans' view ↔</button>`}
+      <button class="btn sm ghost" onClick=${replay}>Replay ↺</button>
+    </div>`}
     ${open && html`<div class="whytext">🧠 ${ai.insight.why_it_matters}</div>`}
+  </div>`;
+}
+
+function QACard({ q, onProof }) {
+  return html`<div class="fc qa-card">
+    <div class="h"><span class="ic">💬</span><span>${q.clock} · you asked</span><span class="spacer"></span>
+      ${!q.pending && html`<${ProofChip} ai=${{ ...q, caption: q.question, line: q.answer }} onProof=${a => onProof(a, { type: "qa", clock: q.clock, title: q.question })} />`}</div>
+    <div class="question">${q.question}</div>
+    ${q.pending ? html`<p class="muted writing">Looking it up<span class="dots"><i></i><i></i><i></i></span></p>` : html`<p>${q.answer}</p>
+      ${q.tools && q.tools.length > 0 && html`<div class="tools">${q.tools.map(t => html`<span class="tool">🔧 ${t.tool.replace(/_/g, " ")}${t.args ? " · " + t.args : ""}</span>`)}</div>`}`}
   </div>`;
 }
 
 function RecapCard({ recap }) {
   const r = recap.recap;
-  return html`<div class="fc recap"><div class="h"><span>📰</span><span>${recap.when === "full-time" ? "Full-time" : "Half-time"} recap</span>
+  return html`<div class="fc recap"><div class="h"><span class="ic">📰</span><span>${recap.when === "full-time" ? "Full-time" : "Half-time"} story</span>
     <span class="spacer"></span><span class="chip ai">✓ Fact-checked</span></div>
     <h2>${r.headline}</h2>${r.summary.map(p => html`<p>${p}</p>`)}
     <div class="potm">⭐ <span><b>${r.player_of_the_match}</b><br/><span class="muted">${r.player_reason}</span></span></div></div>`;
 }
 
-function Feed({ s, send, profile, onCompare, onProof, all, speaking }) {
-  // Studio lists every notable moment; Fan only the ones the crew writes for this viewer.
-  const list = s.moments.filter(m => m.ai || (all ? m.importance >= 0.3 : crewCovers(profile, m))).slice(0, 40);
-  return html`<div class="feed">
-    ${s.recap && html`<${RecapCard} recap=${s.recap} />`}
-    ${list.map(m => html`<${MomentCard} key=${m.id} m=${m} send=${send} onCompare=${onCompare} onProof=${onProof}
-      yourTeam=${profile.favorite_team} waiting=${crewCovers(profile, m)} speaking=${speaking} />`)}
-    ${!list.length && !s.recap && html`<div class="empty">Key moments appear here as the match unfolds, each one written up by the AI crew.</div>`}
-  </div>`;
+// How a club likes to play, in words (from its tactics, 0..1).
+function style(t) {
+  const { press, directness, tempo } = t.tactics || {};
+  if (press >= 0.75) return "press high and hunt the ball";
+  if (directness >= 0.7) return "go long and direct";
+  if (press <= 0.3) return "sit deep and counter";
+  if (directness <= 0.35 && tempo >= 0.5) return "keep the ball and build patiently";
+  return "mix it up";
 }
 
-// ------------------------------------------------------------------ ask the match
+function KickoffCard({ meta }) {
+  if (!meta) return null;
+  const { home, away } = meta;
+  return html`<div class="fc kickoff"><div class="h"><span class="ic">🏟️</span><span>00:00 · kick-off</span></div>
+    <div class="cap">${home.name} v ${away.name}</div>
+    <p>${home.name} (${home.formation}) like to ${style(home)}. ${away.name} (${away.formation}) like to ${style(away)}.</p></div>`;
+}
 
 function suggestions(s) {
-  const out = ["Who's on top right now, and why?", "What changed in the last 10 minutes?"];
+  const out = ["Who's on top right now, and why?"];
   const top = s.snapshot && s.snapshot.top_players[0];
-  if (top && top.touches) out.splice(1, 0, `How is ${top.name} playing?`);
-  out.push("Who has been the best defender?");
+  if (top && top.touches) out.push(`How is ${top.name} playing?`);
+  out.push("What changed in the last 10 minutes?");
   return out;
 }
 
-function Ask({ s, ask, onProof }) {
+function AskBar({ s, ask }) {
   const [text, setText] = useState("");
-  const end = useRef(null);
   const busy = s.qa.some(q => q.pending);
-  const go = q => { q = (q || "").trim(); if (q && !busy) { ask(q); setText(""); } };
-  useEffect(() => { end.current && end.current.scrollIntoView({ behavior: "smooth", block: "end" }); }, [s.qa]);
   const last = s.qa[s.qa.length - 1];
-  return html`<div class="ask">
-    <div class="thread">
-      ${!s.qa.length && html`<div class="ask-intro">
-        <div class="cap">Ask the match</div>
-        <p>Ask anything about this match so far. An agent decides which stats to look up, and every number in its answer is fact-checked.</p></div>`}
-      ${s.qa.map(q => html`<div class="qa" key=${q.id}>
-        <div class="q"><span class="muted">${q.clock}</span> ${q.question}</div>
-        ${q.pending ? html`<div class="a pending"><span class="dots"><i></i><i></i><i></i></span> Looking it up…</div>`
-          : html`<div class="a">
-            <p>${q.answer}</p>
-            ${q.tools && q.tools.length > 0 && html`<div class="tools">${q.tools.map(t => html`<span class="tool" title=${`${t.ms} ms`}>🔧 ${t.tool.replace(/_/g, " ")}${t.args ? " · " + t.args : ""}</span>`)}</div>`}
-            <div class="arow"><${ProofChip} ai=${{ ...q, caption: q.question, line: q.answer }}
-              onProof=${a => onProof(a, { type: "qa", clock: q.clock, title: q.question })} /></div>
-          </div>`}
-      </div>`)}
-      <div class="chips">${(last && !last.pending && last.follow_ups && last.follow_ups.length ? last.follow_ups : suggestions(s))
-        .map(q => html`<button class="sugg" disabled=${busy} onClick=${() => go(q)}>${q}</button>`)}</div>
-      <div ref=${end}></div>
-    </div>
+  const chips = (last && !last.pending && last.follow_ups && last.follow_ups.length ? last.follow_ups : suggestions(s)).slice(0, 3);
+  const go = q => { q = (q || "").trim(); if (q && !busy) { ask(q); setText(""); } };
+  return html`<div class="askbox">
+    <div class="chips">${chips.map(q => html`<button class="sugg" disabled=${busy} onClick=${() => go(q)}>${q}</button>`)}</div>
     <form class="askbar" onSubmit=${e => { e.preventDefault(); go(text); }}>
-      <input value=${text} onInput=${e => setText(e.target.value)} maxLength="300" placeholder="Ask about this match…" aria-label="Ask about this match" />
+      <input value=${text} onInput=${e => setText(e.target.value)} maxLength="300" placeholder="Ask anything about this match…" aria-label="Ask about this match" />
       <button class="btn primary" disabled=${busy || !text.trim()}>Ask</button>
     </form>
   </div>`;
 }
 
-// ------------------------------------------------------------------ control room (studio only)
+function Feed({ s, send, ask, profile, onCompare, onProof, speaking }) {
+  const items = [
+    ...s.moments.filter(m => m.ai || crewCovers(profile, m)).slice(0, 40).map(m => ({ kind: "m", at: m.at ?? 0, m })),
+    ...s.qa.map(q => ({ kind: "q", at: q.at ?? 0, q })),
+  ].sort((a, b) => b.at - a.at);
+  return html`<div class="feedpanel">
+    <div class="feedhead"><b>Live commentary</b><span class="muted">${LANGS[profile.language]} · ${profile.persona === "analyst" ? "tactics" : "the story"}</span></div>
+    <div class="feed">
+      ${s.recap && html`<${RecapCard} recap=${s.recap} />`}
+      ${items.map(it => it.kind === "m"
+        ? html`<${MomentCard} key=${it.m.id} m=${it.m} send=${send} onCompare=${onCompare} onProof=${onProof}
+            yourTeam=${profile.favorite_team} waiting=${crewCovers(profile, it.m)} speaking=${speaking} />`
+        : html`<${QACard} key=${it.q.id} q=${it.q} onProof=${onProof} />`)}
+      <${KickoffCard} meta=${s.meta} />
+      ${!items.length && !s.recap && html`<div class="empty">The big moments appear here as they happen, written by the AI crew for you.
+        Or ask a question below.</div>`}
+    </div>
+    <${AskBar} s=${s} ask=${ask} />
+  </div>`;
+}
+
+// ------------------------------------------------------------------ "How it works" (for the curious, and for judges)
 
 function TraceSteps({ trace }) {
   return html`<div class="trace">${trace.map(st => {
@@ -655,7 +633,6 @@ const cueText = c => {
   return JSON.stringify(p);
 };
 
-// Results of scripts/eval_trust.py: the crew run over fresh matches, every shown line re-checked.
 function TrustReport() {
   const [t, setT] = useState(null);
   useEffect(() => { api("/static/app/trust.json").then(setT).catch(() => {}); }, []);
@@ -663,38 +640,129 @@ function TrustReport() {
   const c = t.commentary;
   const tiles = [
     [`${t.unverified_ai_lines_shown} / ${t.ai_lines_audited}`, "AI lines shown that fail an independent re-check"],
-    [`${c.first_draft_passed_pct}%`, "commentary passed on the first draft"],
-    [`${(c.fixed_by_rewrite_pct + c.safe_fallback_pct).toFixed(1)}%`, "caught, then rewritten or replaced"],
+    [`${c.drafts_caught ?? "–"}`, "bad drafts caught and fixed before anyone saw them"],
     [`${t.ask.verified_answers_pct}%`, `of ${t.ask.questions} fan questions answered and verified`],
-    [`${c.crew_seconds_p50}s`, "crew time per moment (median)"],
-    [`$${t.cost_per_match_usd}`, "AI cost per match, two viewers"],
+    [`$${t.cost_per_match_usd}`, "AI cost per match"],
   ];
-  return html`<section><h3>Measured trust <span class="right">${t.matches} fresh matches · ${t.date}</span></h3>
-    <div class="trust">${tiles.map(([v, l]) => html`<div><b>${v}</b><span>${l}</span></div>`)}</div>
-    <div class="muted" style="font-size:12px;margin-top:8px">From <code>scripts/eval_trust.py</code>: the real crew, no cache. Details in docs/TRUST.md.</div>
-  </section>`;
+  return html`<section><h3>Measured, not claimed <span class="right">${t.matches} fresh matches</span></h3>
+    <div class="trust">${tiles.map(([v, l]) => html`<div><b>${v}</b><span>${l}</span></div>`)}</div></section>`;
 }
 
-function ControlRoom({ s, matchId }) {
-  const ai = s.lastAI;
-  return html`<div class="pane">
+const PIPE = [["📡", "Event Hubs", "match events stream in"], ["📊", "Stats engine", "numbers & key moments (code)"],
+  ["🧠", "Analyst", "why it matters", "analyst"], ["🎙️", "Commentator", "the line", "commentator"],
+  ["✅", "Fact-checker", "every number verified", "fact_checker"], ["🎛️", "Producer", "made for you", "producer"],
+  ["🔊", "Voice", "Azure AI Speech"]];
+
+function HowItWorks({ s, matchId, onClose }) {
+  const ai = s.lastAI, ran = new Set(ai ? ai.trace.map(x => x.agent) : []);
+  const mcp = `${location.origin}/mcp/`;
+  return html`<div class="drawer-bg" onClick=${onClose}><aside class="drawer" onClick=${e => e.stopPropagation()}>
+    <button class="btn sm x" onClick=${onClose}>Close ✕</button>
+    <h2>How Touchline works</h2>
+    <p class="lead">Numbers come from code. Words come from AI. Every number the AI writes is checked against the stats before you see it.</p>
+    <section><h3>The AI crew <span class="right">Microsoft Agent Framework on Foundry</span></h3>
+      <div class="pipe" key=${ai ? ai.moment.id : "idle"}>${PIPE.map(([ic, name, what, agent], i) => html`
+        <div class=${"node" + (agent && ran.has(agent) ? " lit" : "")} style=${{ "--d": `${i * 120}ms` }}><span>${ic}</span><b>${name}</b><small>${what}</small></div>`)}</div>
+      ${ai ? html`<div class="muted" style="font-size:12px;margin:10px 0 6px">Last run: ${ai.moment.clock} · ${ai.moment.title} · ${(ai.trace.reduce((a, x) => a + x.ms, 0) / 1000).toFixed(1)}s</div>
+        <${TraceSteps} trace=${ai.trace} />` : html`<div class="muted" style="font-size:12px;margin-top:8px">Play the match: each agent's step shows here as the crew covers a moment.</div>`}
+      <p class="muted" style="font-size:12px">If a draft fails the fact-check, it goes back to its writer with the exact problem. After repeated failures the verified stats text is shown instead: the show goes on.</p>
+    </section>
     <${TrustReport} />
-    <section><h3>Last crew run <span class="right">Agent Framework · Foundry</span></h3>
-      ${ai ? html`<div class="muted" style="font-size:12px;margin-bottom:8px">${ai.moment.clock} · ${ai.moment.title} · ${(ai.trace.reduce((a, x) => a + x.ms, 0) / 1000).toFixed(1)}s</div>
-        <${TraceSteps} trace=${ai.trace} />`
-        : html`<div class="empty">Each agent's work shows up here when the crew covers a moment.</div>`}</section>
-    <section><h3>Graphics out <span class="right"><a href=${`/api/matches/${matchId}/cues`} target="_blank">all cues as JSON ↗</a></span></h3>
-      <div class="muted" style="font-size:12px;margin:-4px 0 8px">Timed overlay cues a broadcast graphics engine can render. The pitch draws the same feed.</div>
-      <div class="cues">${s.cues.filter(c => c.type !== "player_tag").slice(0, 60).map(c => html`<div class="cue" key=${c.cue_id}>
+    <section><h3>Ask the match</h3>
+      <p class="muted" style="font-size:13px;margin:0 0 8px">A separate agent decides which stats to look up for each question, then the same fact-checker verifies its answer. It only knows the match up to now: no spoilers.</p>
+      <div class="tools">${["match situation", "team stats", "player stats", "top players", "key moments"].map(t => html`<span class="tool">🔧 ${t}</span>`)}</div>
+      <p class="muted" style="font-size:13px;margin:10px 0 4px">The same tools are open to any AI assistant over MCP:</p>
+      <div class="copy"><code>${mcp}</code><button class="btn sm" onClick=${() => navigator.clipboard && navigator.clipboard.writeText(mcp)}>Copy</button></div>
+    </section>
+    <section><h3>For broadcasters <span class="right"><a href=${`/api/matches/${matchId}/cues`} target="_blank">all cues as JSON ↗</a></span></h3>
+      <p class="muted" style="font-size:13px;margin:0 0 8px">The overlays on the pitch come from timed graphics cues a TV graphics engine can render.</p>
+      <div class="cues">${s.cues.filter(c => c.type !== "player_tag").slice(0, 12).map(c => html`<div class="cue" key=${c.cue_id}>
         <span class="muted">${c.clock}</span><span class=${"k " + c.type}>${c.type}</span><span class="p">${cueText(c)}</span></div>`)}
-        ${!s.cues.length && html`<div class="empty">Cues stream here during play.</div>`}</div></section>
-  </div>`;
+        ${!s.cues.length && html`<div class="empty">Cues stream here during play.</div>`}</div>
+    </section>
+    <section><h3>Built with</h3><div class="built">${["Microsoft Foundry · gpt-5-mini, gpt-4.1-mini", "Microsoft Agent Framework", "Azure AI Speech",
+      "Azure Event Hubs", "Azure App Service", "Managed identity (no keys)", "Model Context Protocol"].map(b => html`<span>${b}</span>`)}</div>
+      <p class="muted" style="font-size:12px">All matches, clubs and players are synthetic and fictional.</p></section>
+  </aside></div>`;
 }
 
-// ------------------------------------------------------------------ layouts
+// ------------------------------------------------------------------ start screen
 
-function Tabs({ tabs, tab, setTab }) {
-  return html`<div class="tabs">${tabs.map(([id, label]) => html`<button class=${tab === id ? "on" : ""} onClick=${() => setTab(id)}>${label}</button>`)}</div>`;
+function Start({ matches, clubs, matchId, setMatchId, profile, setProfile, onGenerate, onKickOff }) {
+  const club = id => clubs.find(c => c.id === id);
+  const sel = matches.find(m => m.match_id === matchId);
+  const home = sel && club(sel.home_id), away = sel && club(sel.away_id);
+  const set = patch => setProfile({ ...profile, ...patch });
+  return html`<main class="start">
+    <div class="brand logo"><b>TOUCH<i>LINE</i></b></div>
+    <div class="hero">
+      <h1>Watch any match with an <em>AI broadcast crew</em> made for you.</h1>
+      <p>Live commentary, voice and answers, in your language and from your side. Every number is fact-checked.</p>
+    </div>
+    <div class="q">1 · Pick a match</div>
+    <div class="matches">
+      ${matches.map(m => { const h = club(m.home_id), a = club(m.away_id); return html`
+        <button class=${"mcard" + (m.match_id === matchId ? " on" : "")} onClick=${() => { setMatchId(m.match_id); set({ favorite_team: null }); }}>
+          <div class="crests"><${Crest} club=${h} size=${34} /><span>v</span><${Crest} club=${a} size=${34} /></div>
+          <b>${m.home} v ${m.away}</b><small>${tagline(m.scenario)}</small></button>`; })}
+      <button class="mcard new" onClick=${onGenerate}><div class="plus">＋</div><b>Simulate a new match</b><small>any two clubs, any storyline</small></button>
+    </div>
+    <div class="q">2 · Watch as</div>
+    <div class="choices">
+      ${[home, away].filter(Boolean).map(t => html`<button class=${"choice" + (profile.favorite_team === t.id ? " on" : "")}
+        onClick=${() => set({ favorite_team: t.id })}><${Crest} club=${t} size=${24} />${t.name} fan</button>`)}
+      <button class=${"choice" + (!profile.favorite_team ? " on" : "")} onClick=${() => set({ favorite_team: null })}>👀 Neutral</button>
+    </div>
+    <div class="row2">
+      <div><div class="q">3 · Language</div>
+        <div class="choices">${Object.entries(LANGS).map(([k, v]) => html`<button class=${"choice" + (profile.language === k ? " on" : "")} onClick=${() => set({ language: k })}>${v}</button>`)}</div></div>
+      <div><div class="q">4 · Style</div>
+        <div class="choices">
+          <button class=${"choice" + (profile.persona === "casual" ? " on" : "")} onClick=${() => set({ persona: "casual" })}><span>Just the story<small>drama and people</small></span></button>
+          <button class=${"choice" + (profile.persona === "analyst" ? " on" : "")} onClick=${() => set({ persona: "analyst" })}><span>The tactics<small>xG, pressing, patterns</small></span></button>
+        </div></div>
+    </div>
+    <button class="btn primary kick" disabled=${!matchId} onClick=${onKickOff}>▶ Kick off <small>with sound</small></button>
+    <div class="foot">Synthetic matches between fictional clubs · Microsoft Foundry · Agent Framework · Azure AI Speech · Event Hubs</div>
+  </main>`;
+}
+
+// ------------------------------------------------------------------ watch screen
+
+function ProfileMenu({ meta, profile, setProfile, onClose }) {
+  const set = patch => setProfile({ ...profile, ...patch });
+  return html`<div class="pop-bg" onClick=${onClose}><div class="pop" onClick=${e => e.stopPropagation()}>
+    <div class="q">Watch as</div><div class="choices">
+      ${meta && [meta.home, meta.away].map(t => html`<button class=${"choice sm" + (profile.favorite_team === t.id ? " on" : "")} onClick=${() => set({ favorite_team: t.id })}>
+        <${Crest} club=${t} size=${18} />${t.short}</button>`)}
+      <button class=${"choice sm" + (!profile.favorite_team ? " on" : "")} onClick=${() => set({ favorite_team: null })}>Neutral</button></div>
+    <div class="q">Language</div><div class="choices">${Object.entries(LANGS).map(([k, v]) => html`<button class=${"choice sm" + (profile.language === k ? " on" : "")} onClick=${() => set({ language: k })}>${v}</button>`)}</div>
+    <div class="q">Style</div><div class="choices">
+      <button class=${"choice sm" + (profile.persona === "casual" ? " on" : "")} onClick=${() => set({ persona: "casual" })}>Story</button>
+      <button class=${"choice sm" + (profile.persona === "analyst" ? " on" : "")} onClick=${() => set({ persona: "analyst" })}>Tactics</button></div>
+    <p class="muted" style="font-size:12px;margin:10px 0 0">Changes apply instantly, to the whole feed.</p>
+  </div></div>`;
+}
+
+function Watch({ s, send, ask, matchId, summary, profile, setProfile, colors, voice, voiceOn, setVoiceOn, speaking, onBack, onCompare, onProof }) {
+  const [how, setHow] = useState(false), [menu, setMenu] = useState(false);
+  const meta = s.meta, team = teamOf(meta, profile.favorite_team);
+  return html`<div class="app">
+    <header class="top">
+      <button class="brand" onClick=${onBack} title="Back to matches"><b>TOUCH<i>LINE</i></b></button>
+      ${meta && html`<div class="mtitle"><${Crest} club=${meta.home} size=${22} /><b>${meta.home.name}</b><span class="muted">v</span>
+        <b>${meta.away.name}</b><${Crest} club=${meta.away} size=${22} />${summary && html`<span class="muted tl">· ${tagline(summary.scenario)}</span>`}</div>`}
+      <span class="spacer"></span>
+      <button class="btn pchip" onClick=${() => setMenu(true)} title="Change how you watch">
+        ${team ? html`<${Crest} club=${team} size=${18} />` : "👀"}<span>${team ? team.short + " fan" : "Neutral"} · ${LANGS[profile.language]} · ${profile.persona === "analyst" ? "Tactics" : "Story"}</span> ▾</button>
+      ${voice && html`<button class=${"btn voice" + (voiceOn ? " on" : "")} onClick=${() => setVoiceOn(!voiceOn)} aria-pressed=${voiceOn}>${voiceOn ? "🔊 Voice" : "🔈 Voice off"}</button>`}
+      <button class="btn how" onClick=${() => setHow(true)}>⚙ How it works</button>
+    </header>
+    <${Stage} s=${s} send=${send} colors=${colors} showLower=${true} onProof=${onProof} speaking=${speaking} side=${html`
+      <${Feed} s=${s} send=${send} ask=${ask} profile=${profile} onCompare=${onCompare} onProof=${onProof} speaking=${speaking} />`} />
+    ${menu && html`<${ProfileMenu} meta=${meta} profile=${profile} setProfile=${setProfile} onClose=${() => setMenu(false)} />`}
+    ${how && html`<${HowItWorks} s=${s} matchId=${matchId} onClose=${() => setHow(false)} />`}
+  </div>`;
 }
 
 function Stage({ s, send, colors, side, showLower, onProof, speaking }) {
@@ -709,72 +777,6 @@ function Stage({ s, send, colors, side, showLower, onProof, speaking }) {
   </main>`;
 }
 
-function Studio({ s, send, ask, matchId, colors, onCompare, onProof, speaking }) {
-  const [tab, setTab] = useState("live");
-  return html`<${Stage} s=${s} send=${send} colors=${colors} showLower=${true} onProof=${onProof} speaking=${speaking} side=${html`
-    <${Tabs} tab=${tab} setTab=${setTab} tabs=${[["live", "Commentary"], ["ask", "Ask"], ["analysis", "Analysis"], ["control", "Control room"]]} />
-    <div class=${"tabbody" + (tab === "ask" ? " flush" : "")}>
-      ${tab === "ask" && html`<${Ask} s=${s} ask=${ask} onProof=${onProof} />`}
-      ${tab === "live" && html`<${Feed} s=${s} send=${send} profile=${STUDIO_PROFILE} onCompare=${onCompare} onProof=${onProof} all=${true} speaking=${speaking} />`}
-      ${tab === "analysis" && html`<${Analysis} s=${s} colors=${colors} />`}
-      ${tab === "control" && html`<${ControlRoom} s=${s} matchId=${matchId} />`}
-    </div>`} />`;
-}
-
-function YourPlayer({ s, id }) {
-  const p = s.snapshot && s.snapshot.top_players.find(x => x.id === id);
-  const name = playerName(s.meta, id);
-  return html`<div class="yp">⭐ <b>${name}</b> <span class="muted">${p ? [p.goals && `${p.goals} goals`, p.assists && `${p.assists} assists`,
-    `${p.passes} passes (${p.pass_accuracy_pct}%)`, p.key_passes && `${p.key_passes} key passes`, p.xg && `${p.xg} xG`].filter(Boolean).join(" · ")
-    : "· moments involving them are always covered for you"}</span></div>`;
-}
-
-function Fan({ s, send, ask, profile, colors, onEdit, onCompare, onProof, speaking }) {
-  const [tab, setTab] = useState("feed");
-  const team = teamOf(s.meta, profile.favorite_team);
-  return html`<${Stage} s=${s} send=${send} colors=${colors} showLower=${false} onProof=${onProof} speaking=${speaking} side=${html`
-    <div class="me">${team ? html`<${Crest} club=${team} size=${22} />` : "👀"}
-      <span><b>${team ? team.name + " fan" : "Neutral"}</b> · ${profile.persona === "analyst" ? "tactics" : "the story"} · ${LANGS[profile.language]}</span>
-      <span class="spacer"></span><button class="btn sm" onClick=${onEdit}>Change</button></div>
-    ${profile.favorite_player && html`<${YourPlayer} s=${s} id=${profile.favorite_player} />`}
-    <${Tabs} tab=${tab} setTab=${setTab} tabs=${[["feed", "For you"], ["ask", "Ask"], ["analysis", "Stats"]]} />
-    <div class=${"tabbody" + (tab === "ask" ? " flush" : "")}>
-      ${tab === "ask" && html`<${Ask} s=${s} ask=${ask} onProof=${onProof} />`}
-      ${tab === "feed" && html`<${Feed} s=${s} send=${send} profile=${profile} onCompare=${onCompare} onProof=${onProof} speaking=${speaking} />`}
-      ${tab === "analysis" && html`<${Analysis} s=${s} colors=${colors} />`}
-    </div>`} />`;
-}
-
-function FanSetup({ meta, profile, setProfile, onDone }) {
-  if (!meta) return html`<div class="setup"><div class="empty">Loading match…</div></div>`;
-  const team = teamOf(meta, profile.favorite_team);
-  return html`<div class="setup">
-    <h1>Watch it your way.</h1>
-    <p class="lead">${meta.home.name} v ${meta.away.name}. Touchline's AI crew tailors every key moment to you, and every number is fact-checked.</p>
-    <div class="q">Your club</div>
-    <div class="choices">
-      ${[meta.home, meta.away].map(t => html`<button class=${"choice" + (profile.favorite_team === t.id ? " on" : "")}
-        onClick=${() => setProfile({ ...profile, favorite_team: t.id, favorite_player: null })}><${Crest} club=${t} size=${26} />${t.name}</button>`)}
-      <button class=${"choice" + (!profile.favorite_team ? " on" : "")} onClick=${() => setProfile({ ...profile, favorite_team: null, favorite_player: null })}>Neutral</button>
-    </div>
-    ${team && html`<div class="q">Your player <span class="muted" style="text-transform:none;letter-spacing:0">(optional)</span></div>
-      <select class="select" value=${profile.favorite_player || ""} onChange=${e => setProfile({ ...profile, favorite_player: e.target.value || null })}>
-        <option value="">Nobody in particular</option>
-        ${[...team.starters, ...team.bench].map(p => html`<option value=${p.id}>${p.number} · ${p.name}${p.position ? " · " + p.position : ""}</option>`)}
-      </select>`}
-    <div class="q">How do you like your football?</div>
-    <div class="choices">
-      <button class=${"choice" + (profile.persona === "casual" ? " on" : "")} onClick=${() => setProfile({ ...profile, persona: "casual" })}>
-        <span>Just the story<small>Plain words, drama and people</small></span></button>
-      <button class=${"choice" + (profile.persona === "analyst" ? " on" : "")} onClick=${() => setProfile({ ...profile, persona: "analyst" })}>
-        <span>Give me the tactics<small>xG, pressing, patterns</small></span></button>
-    </div>
-    <div class="q">Language</div>
-    <div class="choices">${Object.entries(LANGS).map(([k, v]) => html`<button class=${"choice" + (profile.language === k ? " on" : "")} onClick=${() => setProfile({ ...profile, language: k })}>${v}</button>`)}</div>
-    <div style="margin-top:30px"><button class="btn primary" style="padding:12px 26px;font-size:16px" onClick=${onDone}>Kick off ▶</button></div>
-  </div>`;
-}
-
 // ------------------------------------------------------------------ modals
 
 function Modal({ onClose, wide, children }) {
@@ -786,24 +788,23 @@ function Modal({ onClose, wide, children }) {
     <button class="btn sm x" onClick=${onClose}>Close ✕</button>${children}</div></div>`;
 }
 
-// "How was this made?": the agent trace behind one specific line, opened from its fact-check chip.
 function ProofModal({ ai, moment, onClose }) {
   const total = ai.trace.reduce((a, x) => a + x.ms, 0);
   const caught = ai.trace.filter(x => x.agent.includes("fact_checker") && x.note.startsWith("rejected")).length;
   return html`<${Modal} onClose=${onClose}>
     <h2>How this ${moment.type === "qa" ? "answer" : "line"} was made</h2>
-    <div class="muted">${icon(moment)} ${moment.clock} · ${moment.title}</div>
+    <div class="muted">${moment.type === "qa" ? "💬" : icon(moment)} ${moment.clock} · ${moment.title}</div>
     <div class="proof-line"><div class="cap">${ai.caption}</div><p>${ai.line}</p></div>
     <div class="proof-sum">
       <span><b>${ai.trace.filter(x => x.ms).length}</b> AI agent runs</span>
       <span><b>${(total / 1000).toFixed(1)}s</b> total</span>
       <span class=${caught ? "warn" : ""}><b>${caught}</b> ${caught === 1 ? "draft" : "drafts"} caught by the fact-checker</span>
-      <span><b>${ai.source === "ai" ? "AI" : "Fallback"}</b> ${ai.source === "ai" ? "line, every number verified" : "verified stats-engine text used"}</span>
+      <span><b>${ai.source === "ai" ? "AI" : "Fallback"}</b> ${ai.source === "ai" ? "every number verified" : "verified stats text used"}</span>
     </div>
     ${ai.insight && ai.insight.why_it_matters && html`<p class="insight">🧠 “${ai.insight.why_it_matters}”</p>`}
     <${TraceSteps} trace=${ai.trace} />
-    <p class="muted" style="font-size:12px;margin-top:14px">Numbers come from code, words come from AI. The fact-checker is plain code:
-      any number or player name that isn't in the stats engine's facts sends the draft back for a rewrite.</p>
+    <p class="muted" style="font-size:12px;margin-top:14px">The fact-checker is plain code: any number or player name that isn't in the
+      stats engine's facts sends the draft back for a rewrite.</p>
   <//>`;
 }
 
@@ -816,11 +817,11 @@ function CompareModal({ matchId, moment, meta, onClose }) {
   }, [moment.id]);
   const who = p => {
     const t = teamOf(meta, p.favorite_team);
-    return html`${t ? html`<${Crest} club=${t} size=${20} />` : "👀"}<span><b>${t ? t.name + " fan" : "Neutral"}</b> · ${p.persona === "analyst" ? "Analyst" : "Casual"} · ${LANGS[p.language]}</span>`;
+    return html`${t ? html`<${Crest} club=${t} size=${20} />` : "👀"}<span><b>${t ? t.name + " fan" : "Neutral"}</b> · ${p.persona === "analyst" ? "Tactics" : "Story"} · ${LANGS[p.language]}</span>`;
   };
   return html`<${Modal} onClose=${onClose} wide=${true}>
     <h2>One moment. Every fan.</h2>
-    <div class="muted">${icon(moment)} ${moment.clock} · ${moment.title}${res ? ` · tailored for ${res.profiles.length} viewers in ${(ms / 1000).toFixed(1)}s (Producer agents run in parallel)` : ""}</div>
+    <div class="muted">${icon(moment)} ${moment.clock} · ${moment.title}${res ? ` · tailored for ${res.profiles.length} fans in ${(ms / 1000).toFixed(1)}s` : ""}</div>
     ${err && html`<div class="empty">${err}</div>`}
     <div class="cmp">${(res ? res.profiles : [0, 1, 2]).map((p, i) => html`<div class="col1">
       ${res ? html`<div class="who">${who(p)}</div><div class="cap">${res.coverage[i].caption}</div><div>${res.coverage[i].line}</div>
@@ -838,62 +839,50 @@ function GenerateModal({ clubs, scenarios, onCreated, onClose }) {
     post("/api/matches", { home, away, scenario }).then(r => onCreated(r.match_id)).catch(e => { setErr(e.detail || "Failed"); setBusy(false); });
   };
   return html`<${Modal} onClose=${onClose} wide=${true}>
-    <h2>Generate a synthetic match</h2>
-    <div class="muted">The simulator plays a full 90 minutes in under a second: realistic events calibrated against Premier League averages, with fictional clubs.</div>
+    <h2>Simulate a new match</h2>
+    <div class="muted">A full 90 minutes in under a second: realistic events calibrated to top-flight averages, between fictional clubs.</div>
     <div class="form">
       <label>Home<select class="select" value=${home} onChange=${e => setHome(e.target.value)}>${clubs.map(c => html`<option value=${c.id}>${c.name} · ${c.formation}</option>`)}</select></label>
       <label>Away<select class="select" value=${away} onChange=${e => setAway(e.target.value)}>${clubs.map(c => html`<option value=${c.id}>${c.name} · ${c.formation}</option>`)}</select></label>
     </div>
     <div class="scen">${scenarios.map(sc => html`<button class=${scenario === sc.id ? "on" : ""} onClick=${() => setScenario(sc.id)}>
-      <b>${sc.id.replace(/_/g, " ")}</b><small>${sc.description}</small></button>`)}</div>
+      <b>${tagline(sc.id)}</b><small>${sc.description}</small></button>`)}</div>
     ${err && html`<div class="empty" style="color:var(--danger)">${err}</div>`}
-    <div style="margin-top:18px"><button class="btn primary" disabled=${busy || home === away} onClick=${go}>${busy ? "Simulating…" : home === away ? "Pick two different clubs" : "Simulate & watch ▶"}</button></div>
+    <div style="margin-top:18px"><button class="btn primary" disabled=${busy || home === away} onClick=${go}>${busy ? "Simulating…" : home === away ? "Pick two different clubs" : "Simulate ▶"}</button></div>
   <//>`;
 }
 
 // ------------------------------------------------------------------ app
 
 function App() {
-  const [mode, setMode] = useState(() => new URLSearchParams(location.search).get("mode") || "studio");
-  const [matches, setMatches] = useState([]), [matchId, setMatchId] = useState(null);
-  const [clubs, setClubs] = useState([]), [scenarios, setScenarios] = useState([]), [ai, setAi] = useState(null);
-  const [fanProfile, setFanProfile] = useState({ persona: "casual", language: "en", favorite_team: null, favorite_player: null });
-  const [fanReady, setFanReady] = useState(false), [compare, setCompare] = useState(null), [gen, setGen] = useState(false);
-  const [proof, setProof] = useState(null), [voice, setVoice] = useState(null), [voiceOn, setVoiceOn] = useState(false);
-  const profile = mode === "fan" && fanReady ? fanProfile : STUDIO_PROFILE;
-  const [s, send, ask] = useMatch(matchId, profile);
+  const params = new URLSearchParams(location.search);
+  const [screen, setScreen] = useState("start");
+  const [matches, setMatches] = useState([]), [matchId, setMatchId] = useState(params.get("match"));
+  const [clubs, setClubs] = useState([]), [scenarios, setScenarios] = useState([]), [voice, setVoice] = useState(false);
+  const [profile, setProfile] = useState({ persona: params.get("style") === "tactics" ? "analyst" : "casual",
+    language: LANGS[params.get("lang")] ? params.get("lang") : "en", favorite_team: params.get("team"), favorite_player: null });
+  const [compare, setCompare] = useState(null), [gen, setGen] = useState(false), [proof, setProof] = useState(null), [voiceOn, setVoiceOn] = useState(false);
+  const [s, send, ask] = useMatch(screen === "watch" ? matchId : null, profile);
   const colors = useMemo(() => teamColors(s.meta), [s.meta]);
-  const speaking = useVoice(matchId, s.lastAI, voiceOn && !(mode === "fan" && !fanReady));
+  const speaking = useVoice(matchId, s.lastAI, voiceOn && screen === "watch");
   const onProof = useCallback((a, m) => setProof({ ai: a, moment: m }), []);
-
-  const loadMatches = sel => api("/api/matches").then(list => { setMatches(list); setMatchId(sel || (list[0] && list[0].match_id)); });
+  const loadMatches = sel => api("/api/matches").then(list => { setMatches(list); setMatchId(id => sel || (list.find(m => m.match_id === id) ? id : list[0] && list[0].match_id)); });
   useEffect(() => {
     loadMatches();
-    api("/api/clubs").then(setClubs); api("/api/scenarios").then(setScenarios); api("/api/health").then(hh => { setAi(hh.ai); setVoice(hh.voice); });
+    api("/api/clubs").then(setClubs); api("/api/scenarios").then(setScenarios); api("/api/health").then(hh => setVoice(hh.voice));
   }, []);
-  useEffect(() => { // pause while the fan is choosing, so they don't miss anything
-    if (mode === "fan" && !fanReady) send({ cmd: "pause" });
-  }, [mode, fanReady, s.meta]);
-  useEffect(() => { setFanReady(false); setFanProfile(p => ({ ...p, favorite_team: null, favorite_player: null })); }, [matchId]);
-
-  return html`<div class="app">
-    <header class="top">
-      <div class="brand"><b>TOUCH<i>LINE</i></b><span>Match intelligence</span></div>
-      <div class="seg"><button class=${mode === "studio" ? "on" : ""} onClick=${() => setMode("studio")}>Studio</button>
-        <button class=${mode === "fan" ? "on" : ""} onClick=${() => setMode("fan")}>Fan</button></div>
-      <select class="select" value=${matchId || ""} onChange=${e => setMatchId(e.target.value)}>
-        ${matches.map(m => html`<option value=${m.match_id}>${m.home} v ${m.away} · ${m.scenario.replace(/_/g, " ")}</option>`)}</select>
-      <button class="btn" onClick=${() => setGen(true)}>＋ Generate match</button>
-      <span class="spacer"></span>
-      ${voice && html`<button class=${"btn voice" + (voiceOn ? " on" : "")} onClick=${() => setVoiceOn(!voiceOn)}
-        aria-pressed=${voiceOn} title="Spoken commentary (Azure AI Speech)">${voiceOn ? "🔊 Voice on" : "🔈 Voice"}</button>`}
-      <span class=${"pill" + (ai ? " live" : "")}><span class="dot"></span>${ai == null ? "…" : ai ? "AI crew live · Microsoft Foundry" : "AI off"}</span>
-    </header>
-    ${mode === "studio" && html`<${Studio} s=${s} send=${send} ask=${ask} speaking=${speaking} matchId=${matchId} colors=${colors} onCompare=${ai ? setCompare : null} onProof=${onProof} />`}
-    ${mode === "fan" && !fanReady && html`<${FanSetup} meta=${s.meta} profile=${fanProfile} setProfile=${setFanProfile}
-      onDone=${() => { setFanReady(true); setTimeout(() => send({ cmd: "play" }), 150); }} />`}
-    ${mode === "fan" && fanReady && html`<${Fan} s=${s} send=${send} ask=${ask} speaking=${speaking} profile=${fanProfile} colors=${colors} onEdit=${() => setFanReady(false)}
-      onCompare=${ai ? setCompare : null} onProof=${onProof} />`}
+  useEffect(() => { // a shareable link to exactly this view
+    const q = new URLSearchParams({ match: matchId || "", lang: profile.language, style: profile.persona === "analyst" ? "tactics" : "story" });
+    if (profile.favorite_team) q.set("team", profile.favorite_team);
+    history.replaceState(null, "", "?" + q);
+  }, [matchId, profileKey(profile)]);
+  const summary = matches.find(m => m.match_id === matchId);
+  return html`<div>
+    ${screen === "start" && html`<${Start} matches=${matches} clubs=${clubs} matchId=${matchId} setMatchId=${setMatchId} profile=${profile}
+      setProfile=${setProfile} onGenerate=${() => setGen(true)} onKickOff=${() => { setVoiceOn(voice); setScreen("watch"); }} />`}
+    ${screen === "watch" && html`<${Watch} s=${s} send=${send} ask=${ask} matchId=${matchId} summary=${summary} profile=${profile} setProfile=${setProfile}
+      colors=${colors} voice=${voice} voiceOn=${voiceOn} setVoiceOn=${setVoiceOn} speaking=${speaking} onBack=${() => setScreen("start")}
+      onCompare=${setCompare} onProof=${onProof} />`}
     ${proof && html`<${ProofModal} ai=${proof.ai} moment=${proof.moment} onClose=${() => setProof(null)} />`}
     ${compare && html`<${CompareModal} matchId=${matchId} moment=${compare} meta=${s.meta} onClose=${() => setCompare(null)} />`}
     ${gen && html`<${GenerateModal} clubs=${clubs} scenarios=${scenarios} onClose=${() => setGen(false)}

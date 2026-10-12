@@ -213,5 +213,28 @@ def test_warm_up_fills_the_cache_playback_reads():
     feed = events[0]["match_id"]
     covers = [k for k in service.cache if k.startswith(f"cover|{feed}|") and k.endswith("analyst|en|-|-")]
     recaps = [k for k in service.cache if k.startswith(f"recap|{feed}|")]
-    assert done > 10 and covers and len(recaps) == 4  # HT + FT, for both default viewers
+    assert done > 10 and covers and len(recaps) == 48  # HT + FT, for all 24 viewer combinations
+    assert any(k.endswith("|casual|fr|kestrel|-") for k in service.cache)  # every language and club
     assert voice.spoken  # audio pre-generated too
+
+
+def test_switching_profile_resends_what_is_already_written(client):
+    from broadcast.models import ViewerProfile
+    from broadcast.relevance import wants_commentary
+    from server.app import MATCHES
+    match_id = client.get("/api/matches").json()[0]["match_id"]
+    feed = MATCHES[match_id][0]["match_id"]
+    spanish = ViewerProfile(persona="casual", language="es")
+    with client.websocket_connect(f"/ws/matches/{match_id}?speed=1&autoplay=false") as ws:
+        ws.receive_json(), ws.receive_json()  # hello, status
+        ws.send_json({"cmd": "seek", "minute": 30})
+        moments = ws.receive_json()["state"]["moments"]
+        ws.receive_json()  # status
+        m = next(x for x in moments if wants_commentary(spanish, x))
+        client.app.state.broadcast.cache[f"cover|{feed}|{m['id']}|{spanish.key()}"] = {
+            "moment_id": m["id"], "profile_key": spanish.key(), "caption": "¡Golazo!", "line": "¡Qué jugada!",
+            "language": "es", "source": "ai", "insight": None, "trace": []}
+        ws.send_json({"cmd": "profile", "persona": "casual", "language": "es"})
+        assert ws.receive_json()["type"] == "profile"
+        msg = ws.receive_json()
+        assert msg["type"] == "commentary" and msg["moment"]["id"] == m["id"] and msg["coverage"]["line"] == "¡Qué jugada!"

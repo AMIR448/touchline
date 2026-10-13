@@ -422,3 +422,12 @@ canvas.clickable { cursor: pointer; }
 .top .brand { flex: none; }
 
 .fc .quiet { font-size: 12px; } .fc .quiet a { color: var(--muted); text-decoration: none; } .fc .quiet a:hover { color: var(--ai); }
+
+.stabs { display: flex; gap: 4px; }
+.stabs button { border: 0; background: none; padding: 4px 10px; border-radius: 8px; color: var(--muted);
+  font: 700 14px var(--display); letter-spacing: .12em; text-transform: uppercase; }
+.stabs button.on { color: var(--text); background: var(--panel2); box-shadow: inset 0 -2px 0 var(--ai); }
+.feedhead { align-items: center; }
+.statsbody { flex: 1; min-height: 0; overflow: auto; padding: 4px 16px 16px; }
+.statsbody section { padding: 14px 0; border-bottom: 1px solid var(--line); }
+.statsbody section:last-child { border-bottom: 0; }

@@ -511,13 +511,13 @@ function StatList({ s, colors, keys, compact }) {
     hc=${colors[h]} ac=${colors[a]} lowWins=${low} compact=${compact} />`);
 }
 
-function StatStrip({ s, colors, onOpen }) {
+function StatStrip({ s, colors, onOpen, open }) {
   const meta = s.meta;
   return html`<div class="strip" role="button" tabindex="0" onClick=${onOpen} onKeyDown=${e => e.key === "Enter" && onOpen()} title="Full match stats">
     ${meta && html`<div class="teams"><span><i style=${{ background: colors[meta.home.id] }}></i>${meta.home.short}</span>
       <span>${meta.away.short}<i style=${{ background: colors[meta.away.id] }}></i></span></div>`}
     <div class="cells"><${StatList} s=${s} colors=${colors} keys=${STRIP} compact=${true} /></div>
-    <div class="more">Full stats ›</div>
+    <div class="more">${open ? "‹ Commentary" : "Full stats ›"}</div>
   </div>`;
 }
 
@@ -625,13 +625,20 @@ function AskBar({ s, ask }) {
   </div>`;
 }
 
-function Feed({ s, send, ask, profile, onCompare, onProof, speaking }) {
+function SideTabs({ tab, setTab, note }) {
+  return html`<div class="feedhead">
+    <div class="stabs">${[["feed", "Live commentary"], ["stats", "Stats"]].map(([id, label]) => html`
+      <button class=${tab === id ? "on" : ""} onClick=${() => setTab(id)}>${label}</button>`)}</div>
+    ${note && html`<span class="muted">${note}</span>`}</div>`;
+}
+
+function Feed({ s, send, ask, profile, onCompare, onProof, speaking, setTab }) {
   const items = [
     ...s.moments.filter(m => m.ai || crewCovers(profile, m)).slice(0, 40).map(m => ({ kind: "m", at: m.at ?? 0, m })),
     ...s.qa.map(q => ({ kind: "q", at: q.at ?? 0, q })),
   ].sort((a, b) => b.at - a.at);
   return html`<div class="feedpanel">
-    <div class="feedhead"><b>Live commentary</b><span class="muted">${LANGS[profile.language]} · ${profile.persona === "analyst" ? "tactics" : "the story"}</span></div>
+    <${SideTabs} tab="feed" setTab=${setTab} note=${`${LANGS[profile.language]} · ${profile.persona === "analyst" ? "tactics" : "the story"}`} />
     <div class="feed">
       ${s.recap && html`<${RecapCard} recap=${s.recap} />`}
       ${items.map(it => it.kind === "m"
@@ -778,7 +785,7 @@ function ProfileMenu({ meta, profile, setProfile, onClose }) {
 }
 
 function Watch({ s, send, ask, closeCard, matchId, summary, profile, setProfile, colors, voice, voiceOn, setVoiceOn, speaking, onBack, onCompare, onProof }) {
-  const [how, setHow] = useState(false), [menu, setMenu] = useState(false), [stats, setStats] = useState(false);
+  const [how, setHow] = useState(false), [menu, setMenu] = useState(false), [tab, setTab] = useState("feed");
   const onPlayer = useCallback(id => send({ cmd: "player", id }), [send]);
   const meta = s.meta, team = teamOf(meta, profile.favorite_team);
   return html`<div class="app">
@@ -793,22 +800,22 @@ function Watch({ s, send, ask, closeCard, matchId, summary, profile, setProfile,
       <button class="btn how" onClick=${() => setHow(true)}>⚙ How it works</button>
     </header>
     <${Stage} s=${s} send=${send} colors=${colors} showLower=${true} onProof=${onProof} speaking=${speaking}
-      onPlayer=${onPlayer} onStats=${() => setStats(true)} side=${html`
-      <${Feed} s=${s} send=${send} ask=${ask} profile=${profile} onCompare=${onCompare} onProof=${onProof} speaking=${speaking} />`} />
+      onPlayer=${onPlayer} statsOpen=${tab === "stats"} onStats=${() => setTab(tab === "stats" ? "feed" : "stats")} side=${tab === "stats"
+        ? html`<${StatsPanel} s=${s} colors=${colors} onPlayer=${onPlayer} setTab=${setTab} />` : html`
+      <${Feed} s=${s} send=${send} ask=${ask} profile=${profile} onCompare=${onCompare} onProof=${onProof} speaking=${speaking} setTab=${setTab} />`} />
     ${menu && html`<${ProfileMenu} meta=${meta} profile=${profile} setProfile=${setProfile} onClose=${() => setMenu(false)} />`}
     ${how && html`<${HowItWorks} s=${s} matchId=${matchId} onClose=${() => setHow(false)} />`}
-    ${stats && html`<${FullStats} s=${s} colors=${colors} onPlayer=${id => { setStats(false); onPlayer(id); }} onClose=${() => setStats(false)} />`}
     ${s.card && html`<${PlayerCard} p=${s.card} meta=${meta} colors=${colors} onAsk=${ask} onClose=${closeCard} />`}
   </div>`;
 }
 
-function Stage({ s, send, colors, side, showLower, onProof, speaking, onPlayer, onStats }) {
+function Stage({ s, send, colors, side, showLower, onProof, speaking, onPlayer, onStats, statsOpen }) {
   const ref = useRef(null), w = useStageFit(ref);
   return html`<main class="stage" ref=${ref} style=${w ? { gridTemplateColumns: `${w}px minmax(340px, 620px)` } : {}}>
     <div class="left">
       <${Broadcast} s=${s} colors=${colors} showLower=${showLower} onProof=${onProof} speaking=${speaking} onPlayer=${onPlayer} />
       <${Transport} s=${s} send=${send} colors=${colors} />
-      <${StatStrip} s=${s} colors=${colors} onOpen=${onStats} />
+      <${StatStrip} s=${s} colors=${colors} onOpen=${onStats} open=${statsOpen} />
     </div>
     <aside class="side">${side}</aside>
   </main>`;
@@ -848,23 +855,21 @@ function Chaos({ snap }) {
       <div class="muted" style="font-size:12px">0 calm build-up · 100 end-to-end chaos</div></div></div>`;
 }
 
-function FullStats({ s, colors, onPlayer, onClose }) {
+function StatsPanel({ s, colors, onPlayer, setTab }) {
   const snap = s.snapshot, meta = s.meta;
-  return html`<${Modal} onClose=${onClose} wide=${true}>
-    <h2>Match stats <span class="muted" style="font: 500 15px var(--sans)">${s.clock}</span></h2>
-    ${!snap || !meta ? html`<div class="empty">Waiting for kick-off…</div>` : html`<div class="fullstats">
-      <div>
-        <section><h3>Momentum <span class="right">who's on top, minute by minute</span></h3><${Momentum} s=${s} colors=${colors} /></section>
-        <section><h3>Chance quality race (xG)</h3><${XgRace} s=${s} colors=${colors} /></section>
-        <section><h3>Control vs chaos <span class="right">last 5 min</span></h3><${Chaos} snap=${snap} /></section>
-      </div>
-      <div>
-        <section><h3>Team stats</h3><${StatList} s=${s} colors=${colors} keys=${DESK} /></section>
-        <section><h3>Top players</h3><div class="tops">${snap.top_players.filter(p => p.touches).map(p => html`
-          <button class="tp" onClick=${() => onPlayer(p.id)}><b style=${{ background: colors[p.team_id], color: inkOn(colors[p.team_id] || "#fff") }}>${p.number}</b>
-            <span>${p.name}<small>${[p.goals && `${p.goals} goal${p.goals > 1 ? "s" : ""}`, p.assists && `${p.assists} assist`, `${p.passes} passes`, p.xg && `${p.xg} xG`].filter(Boolean).join(" · ")}</small></span></button>`)}</div></section>
-      </div></div>`}
-  <//>`;
+  return html`<div class="feedpanel">
+    <${SideTabs} tab="stats" setTab=${setTab} note=${s.clock} />
+    <div class="statsbody">
+    ${!snap || !meta ? html`<div class="empty">Waiting for kick-off…</div>` : html`
+      <section><h3>Momentum <span class="right">who's on top, minute by minute</span></h3><${Momentum} s=${s} colors=${colors} /></section>
+      <section><h3>Chance quality race (xG)</h3><${XgRace} s=${s} colors=${colors} /></section>
+      <section><h3>Control vs chaos <span class="right">last 5 min</span></h3><${Chaos} snap=${snap} /></section>
+      <section><h3>Top players <span class="right">click for their card</span></h3><div class="tops">${snap.top_players.filter(p => p.touches).map(p => html`
+        <button class="tp" onClick=${() => onPlayer(p.id)}><b style=${{ background: colors[p.team_id], color: inkOn(colors[p.team_id] || "#fff") }}>${p.number}</b>
+          <span>${p.name}<small>${[p.goals && `${p.goals} goal${p.goals > 1 ? "s" : ""}`, p.assists && `${p.assists} assist`, `${p.passes} passes`, p.xg && `${p.xg} xG`].filter(Boolean).join(" · ")}</small></span></button>`)}</div></section>
+      <section><h3>Team stats</h3><${StatList} s=${s} colors=${colors} keys=${DESK} /></section>`}
+    </div>
+  </div>`;
 }
 
 const POS = { GK: "Goalkeeper", DF: "Defender", MF: "Midfielder", FW: "Forward" };

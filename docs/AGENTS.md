@@ -52,9 +52,10 @@ The same tools are served over the **Model Context Protocol** at `/mcp/` (stream
 `server/mcp_server.py`), with a `match_id` and an optional `minute`. Any MCP client (GitHub
 Copilot, Claude, a Foundry agent, a club's own analyst bot) can query a match:
 
-```json
-{ "mcpServers": { "touchline": { "type": "http", "url": "http://localhost:8000/mcp/" } } }
-```
+**With GitHub Copilot:** open this repo in VS Code. `.vscode/mcp.json` already points Copilot at the live
+server, so in Copilot Chat (agent mode) you can ask *"Who's on top in the Kestrel v Marlowe match at
+minute 60?"* and Copilot calls Touchline's tools to answer. `.github/copilot-instructions.md` tells it
+how. Any other MCP client works the same way with the URL `https://touchline-dfbaf4.azurewebsites.net/mcp/`.
 
 ## Voice
 

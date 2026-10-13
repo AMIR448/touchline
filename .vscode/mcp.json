@@ -1,0 +1,12 @@
+{
+  "servers": {
+    "touchline": {
+      "type": "http",
+      "url": "https://touchline-dfbaf4.azurewebsites.net/mcp/"
+    },
+    "touchline-local": {
+      "type": "http",
+      "url": "http://localhost:8000/mcp/"
+    }
+  }
+}

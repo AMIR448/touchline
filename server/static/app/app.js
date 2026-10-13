@@ -56,7 +56,7 @@ function teamColors(meta) {
 const startLineups = meta => (meta ? { [meta.home.id]: meta.home.starters.map(p => p.id), [meta.away.id]: meta.away.starters.map(p => p.id) } : {});
 const initial = () => ({ meta: null, durationMin: 95, status: { playing: false, speed: 10, clock: "00:00" }, clock: "00:00", period: 1,
   trail: [], last: null, lineups: {}, snapshot: null, moments: [], cues: [], badges: [], banner: null, lower: null, recap: null, lastAI: null,
-  qa: [] });
+  qa: [], card: null });
 
 function applyLineup(lineups, ev) {
   const team = lineups[ev.team_id];
@@ -110,13 +110,15 @@ function reduce(s, msg, key) {
     case "reset": {
       const d = msg.event.display;
       const last = d ? { ...d, team: msg.event.team_id, player: msg.event.player_id, type: msg.event.type } : null;
-      return { ...s, trail: last ? [last] : [], last, lineups: msg.lineups || s.lineups, badges: [], banner: null, lower: null, cues: [],
+      return { ...s, period: msg.event.period || s.period, trail: last ? [last] : [], last, lineups: msg.lineups || s.lineups, badges: [], banner: null, lower: null, cues: [],
         recap: null, snapshot: msg.state, moments: [...msg.state.moments].reverse().map((m, i) => ({ ...m, past: true, at: -i })), clock: msg.event.clock };
     }
     case "recap":
       return msg.profile_key === key && msg.recap ? { ...s, recap: msg } : s;
     case "profile":  // new language/club/style: drop lines written for the old one; the server re-sends what it has
       return { ...s, moments: s.moments.map(m => ({ ...m, ai: undefined, past: true })), recap: null, lower: null };
+    case "player":
+      return { ...s, card: msg.player };
     case "answer":
       return { ...s, qa: s.qa.map(q => (q.id === msg.id ? { ...q, ...msg, pending: false } : q)) };
     case "error":
@@ -149,7 +151,8 @@ function useMatch(matchId, profile) {
     setS(prev => ({ ...prev, qa: [...prev.qa, { id, question, pending: true, clock: prev.clock, at: performance.now() }] }));
     send({ cmd: "ask", id, question });
   }, []);
-  return [s, send, ask];
+  const closeCard = useCallback(() => setS(prev => ({ ...prev, card: null })), []);
+  return [s, send, ask, closeCard];
 }
 
 // The commentator's voice: plays each new line for this viewer; if lines pile up (fast replay),
@@ -293,7 +296,7 @@ function drawLines(ctx, w, hgt) {
   }
 }
 
-function Pitch({ s, colors }) {
+function Pitch({ s, colors, onPlayer }) {
   const canvas = useRef(null), live = useRef({}), anim = useRef({ players: {}, ball: null, t: 0 }), bg = useRef(null);
   const people = useMemo(() => playerById(s.meta), [s.meta]);
   const targets = useMemo(() => shapeTargets(s.meta, s.lineups, s.last), [s.meta, s.lineups, s.last]);
@@ -376,7 +379,19 @@ function Pitch({ s, colors }) {
     raf = requestAnimationFrame(frame);
     return () => cancelAnimationFrame(raf);
   }, []);
-  return html`<canvas ref=${canvas}></canvas>`;
+  // click a player to open their card (nearest dot within reach of the click)
+  const click = e => {
+    if (!onPlayer) return;
+    const r = canvas.current.getBoundingClientRect(), k = r.width / PL;
+    const x = (e.clientX - r.left) / k, y = (e.clientY - r.top) / k;
+    let best = null, bd = 3.2;
+    for (const [id, p] of Object.entries(anim.current.players)) {
+      const d = Math.hypot(p.x - x, p.y - y);
+      if (d < bd) { bd = d; best = id; }
+    }
+    if (best) onPlayer(best);
+  };
+  return html`<canvas ref=${canvas} onClick=${click} class=${onPlayer ? "clickable" : ""} title=${onPlayer ? "Click a player for their stats" : ""}></canvas>`;
 }
 
 // Sizes the left column to the largest 105:68 pitch that fits the height, so the pitch, timeline and
@@ -401,7 +416,7 @@ function useStageFit(ref) {
 
 const Eq = () => html`<span class="eq" aria-label="speaking"><i></i><i></i><i></i><i></i></span>`;
 
-function Broadcast({ s, colors, showLower = true, onProof, speaking }) {
+function Broadcast({ s, colors, showLower = true, onProof, speaking, onPlayer }) {
   const now = useTick(400);
   const meta = s.meta;
   const score = s.snapshot ? s.snapshot.match.score : {};
@@ -409,7 +424,7 @@ function Broadcast({ s, colors, showLower = true, onProof, speaking }) {
   const banner = s.banner && s.banner.until > now ? s.banner : null;
   const lower = showLower && s.lower && s.lower.until > now ? s.lower : null; // off air after ~10s, like TV
   return html`<div class="pitchwrap"><div class="frame">
-    <${Pitch} s=${s} colors=${colors} />
+    <${Pitch} s=${s} colors=${colors} onPlayer=${onPlayer} />
     ${meta && html`<div class="scorebug">
       <div class="team"><i style=${{ background: colors[meta.home.id] }}></i>${meta.home.short}</div>
       <div class="score">${score[meta.home.id] ?? 0}–${score[meta.away.id] ?? 0}</div>
@@ -429,7 +444,22 @@ function Broadcast({ s, colors, showLower = true, onProof, speaking }) {
 
 // ------------------------------------------------------------------ transport
 
-function Transport({ s, send }) {
+// Momentum as a wave behind the timeline: above the line = home on top, below = away.
+function Wave({ s, colors, max }) {
+  const meta = s.meta, tl = s.snapshot ? s.snapshot.momentum.timeline : [];
+  if (!meta || tl.length < 2) return null;
+  const W = 1000, H = 40, mid = H / 2;
+  const amp = v => Math.max(-1, Math.min(1, v * 1.8));  // momentum rarely passes ±0.5: scale it up so the swings read
+  const pts = tl.map((v, i) => `${((i / max) * W).toFixed(1)},${(mid - amp(v) * (mid - 1)).toFixed(1)}`);
+  const area = `M0,${mid} L${pts.join(" L")} L${((tl.length - 1) / max * W).toFixed(1)},${mid} Z`;
+  return html`<svg class="wave" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-label="momentum">
+    <defs><clipPath id="wt"><rect width=${W} height=${mid} /></clipPath><clipPath id="wb"><rect y=${mid} width=${W} height=${mid} /></clipPath></defs>
+    <path d=${area} fill=${colors[meta.home.id]} opacity=".8" clip-path="url(#wt)" />
+    <path d=${area} fill=${colors[meta.away.id]} opacity=".8" clip-path="url(#wb)" />
+  </svg>`;
+}
+
+function Transport({ s, send, colors }) {
   const ref = useRef(null);
   const max = s.durationMin || 95;
   const pos = Math.min(minuteOf(s.clock), max);
@@ -441,7 +471,8 @@ function Transport({ s, send }) {
   return html`<div class="transport">
     <button class="play" onClick=${() => send({ cmd: s.status.playing ? "pause" : "play" })} aria-label="play/pause">${s.status.playing ? "❚❚" : "▶"}</button>
     <div class="speeds">${[1, 10, 30, 60, 120].map(x => html`<button class=${s.status.speed === x ? "on" : ""} onClick=${() => send({ cmd: "speed", value: x })}>${x}×</button>`)}</div>
-    <div class="scrub" ref=${ref} onClick=${seek} title="Click to jump to a minute">
+    <div class="scrub" ref=${ref} onClick=${seek} title="Momentum: who's on top, minute by minute. Click to jump.">
+      <${Wave} s=${s} colors=${colors} max=${max} />
       <div class="track"></div><div class="fill" style=${{ width: `${(pos / max) * 100}%` }}></div>
       <div class="ht" style=${{ left: `${(45 / max) * 100}%` }}></div>
       ${marks.map(m => html`<span class=${"mk mk-" + m.type} title=${m.title} style=${{ left: `${(minuteOf(m.clock) / max) * 100}%` }}>
@@ -480,13 +511,13 @@ function StatList({ s, colors, keys, compact }) {
     hc=${colors[h]} ac=${colors[a]} lowWins=${low} compact=${compact} />`);
 }
 
-function StatStrip({ s, colors }) {
+function StatStrip({ s, colors, onOpen }) {
   const meta = s.meta;
-  return html`<div class="strip">
+  return html`<div class="strip" role="button" tabindex="0" onClick=${onOpen} onKeyDown=${e => e.key === "Enter" && onOpen()} title="Full match stats">
     ${meta && html`<div class="teams"><span><i style=${{ background: colors[meta.home.id] }}></i>${meta.home.short}</span>
       <span>${meta.away.short}<i style=${{ background: colors[meta.away.id] }}></i></span></div>`}
     <div class="cells"><${StatList} s=${s} colors=${colors} keys=${STRIP} compact=${true} /></div>
-    <div class="mini"><div class="mlbl">Momentum</div><${Momentum} s=${s} colors=${colors} H=${44} legend=${false} /></div>
+    <div class="more">Full stats ›</div>
   </div>`;
 }
 
@@ -524,7 +555,7 @@ function MomentCard({ m, send, onCompare, onProof, yourTeam, waiting, speaking }
       <span class="spacer"></span>${speaking === m.id && html`<${Eq} />`}<${ProofChip} ai=${ai} onProof=${a => onProof(a, m)} /></div>
     <div class="cap">${ai ? ai.caption : m.title}</div>
     ${ai ? html`<p>${ai.line}</p>`
-      : waiting && m.past ? html`<p class="muted"><a href="#" onClick=${replay}>Replay this moment ↺</a></p>`
+      : waiting && m.past ? html`<p class="muted quiet"><a href="#" onClick=${replay}>Replay ↺</a></p>`
       : waiting ? html`<p class="muted writing">The crew is writing this<span class="dots"><i></i><i></i><i></i></span></p>` : null}
     ${ai && html`<div class="acts">
       ${ai.insight && ai.insight.why_it_matters && html`<button class="btn sm ghost" onClick=${() => setOpen(!open)}>${open ? "Hide" : "Why?"}</button>`}
@@ -698,7 +729,7 @@ function Start({ matches, clubs, matchId, setMatchId, profile, setProfile, onGen
   return html`<main class="start">
     <div class="brand logo"><b>TOUCH<i>LINE</i></b></div>
     <div class="hero">
-      <h1>Watch any match with an <em>AI broadcast crew</em> made for you.</h1>
+      <h1>Watch any match with an<br/><em>AI broadcast crew</em> made for you.</h1>
       <p>Live commentary, voice and answers, in your language and from your side. Every number is fact-checked.</p>
     </div>
     <div class="q">1 · Pick a match</div>
@@ -709,19 +740,19 @@ function Start({ matches, clubs, matchId, setMatchId, profile, setProfile, onGen
           <b>${m.home} v ${m.away}</b><small>${tagline(m.scenario)}</small></button>`; })}
       <button class="mcard new" onClick=${onGenerate}><div class="plus">＋</div><b>Simulate a new match</b><small>any two clubs, any storyline</small></button>
     </div>
-    <div class="q">2 · Watch as</div>
-    <div class="choices">
-      ${[home, away].filter(Boolean).map(t => html`<button class=${"choice" + (profile.favorite_team === t.id ? " on" : "")}
-        onClick=${() => set({ favorite_team: t.id })}><${Crest} club=${t} size=${24} />${t.name} fan</button>`)}
-      <button class=${"choice" + (!profile.favorite_team ? " on" : "")} onClick=${() => set({ favorite_team: null })}>👀 Neutral</button>
-    </div>
-    <div class="row2">
+    <div class="row3">
+      <div><div class="q">2 · Watch as</div>
+        <div class="choices">
+          ${[home, away].filter(Boolean).map(t => html`<button class=${"choice" + (profile.favorite_team === t.id ? " on" : "")}
+            onClick=${() => set({ favorite_team: t.id })}><${Crest} club=${t} size=${20} />${t.short} fan</button>`)}
+          <button class=${"choice" + (!profile.favorite_team ? " on" : "")} onClick=${() => set({ favorite_team: null })}>Neutral</button>
+        </div></div>
       <div><div class="q">3 · Language</div>
         <div class="choices">${Object.entries(LANGS).map(([k, v]) => html`<button class=${"choice" + (profile.language === k ? " on" : "")} onClick=${() => set({ language: k })}>${v}</button>`)}</div></div>
       <div><div class="q">4 · Style</div>
         <div class="choices">
-          <button class=${"choice" + (profile.persona === "casual" ? " on" : "")} onClick=${() => set({ persona: "casual" })}><span>Just the story<small>drama and people</small></span></button>
-          <button class=${"choice" + (profile.persona === "analyst" ? " on" : "")} onClick=${() => set({ persona: "analyst" })}><span>The tactics<small>xG, pressing, patterns</small></span></button>
+          <button class=${"choice" + (profile.persona === "casual" ? " on" : "")} onClick=${() => set({ persona: "casual" })} title="Drama and people">Story</button>
+          <button class=${"choice" + (profile.persona === "analyst" ? " on" : "")} onClick=${() => set({ persona: "analyst" })} title="xG, pressing, patterns">Tactics</button>
         </div></div>
     </div>
     <button class="btn primary kick" disabled=${!matchId} onClick=${onKickOff}>▶ Kick off <small>with sound</small></button>
@@ -746,8 +777,9 @@ function ProfileMenu({ meta, profile, setProfile, onClose }) {
   </div></div>`;
 }
 
-function Watch({ s, send, ask, matchId, summary, profile, setProfile, colors, voice, voiceOn, setVoiceOn, speaking, onBack, onCompare, onProof }) {
-  const [how, setHow] = useState(false), [menu, setMenu] = useState(false);
+function Watch({ s, send, ask, closeCard, matchId, summary, profile, setProfile, colors, voice, voiceOn, setVoiceOn, speaking, onBack, onCompare, onProof }) {
+  const [how, setHow] = useState(false), [menu, setMenu] = useState(false), [stats, setStats] = useState(false);
+  const onPlayer = useCallback(id => send({ cmd: "player", id }), [send]);
   const meta = s.meta, team = teamOf(meta, profile.favorite_team);
   return html`<div class="app">
     <header class="top">
@@ -760,23 +792,94 @@ function Watch({ s, send, ask, matchId, summary, profile, setProfile, colors, vo
       ${voice && html`<button class=${"btn voice" + (voiceOn ? " on" : "")} onClick=${() => setVoiceOn(!voiceOn)} aria-pressed=${voiceOn}>${voiceOn ? "🔊 Voice" : "🔈 Voice off"}</button>`}
       <button class="btn how" onClick=${() => setHow(true)}>⚙ How it works</button>
     </header>
-    <${Stage} s=${s} send=${send} colors=${colors} showLower=${true} onProof=${onProof} speaking=${speaking} side=${html`
+    <${Stage} s=${s} send=${send} colors=${colors} showLower=${true} onProof=${onProof} speaking=${speaking}
+      onPlayer=${onPlayer} onStats=${() => setStats(true)} side=${html`
       <${Feed} s=${s} send=${send} ask=${ask} profile=${profile} onCompare=${onCompare} onProof=${onProof} speaking=${speaking} />`} />
     ${menu && html`<${ProfileMenu} meta=${meta} profile=${profile} setProfile=${setProfile} onClose=${() => setMenu(false)} />`}
     ${how && html`<${HowItWorks} s=${s} matchId=${matchId} onClose=${() => setHow(false)} />`}
+    ${stats && html`<${FullStats} s=${s} colors=${colors} onPlayer=${id => { setStats(false); onPlayer(id); }} onClose=${() => setStats(false)} />`}
+    ${s.card && html`<${PlayerCard} p=${s.card} meta=${meta} colors=${colors} onAsk=${ask} onClose=${closeCard} />`}
   </div>`;
 }
 
-function Stage({ s, send, colors, side, showLower, onProof, speaking }) {
+function Stage({ s, send, colors, side, showLower, onProof, speaking, onPlayer, onStats }) {
   const ref = useRef(null), w = useStageFit(ref);
   return html`<main class="stage" ref=${ref} style=${w ? { gridTemplateColumns: `${w}px minmax(340px, 620px)` } : {}}>
     <div class="left">
-      <${Broadcast} s=${s} colors=${colors} showLower=${showLower} onProof=${onProof} speaking=${speaking} />
-      <${Transport} s=${s} send=${send} />
-      <${StatStrip} s=${s} colors=${colors} />
+      <${Broadcast} s=${s} colors=${colors} showLower=${showLower} onProof=${onProof} speaking=${speaking} onPlayer=${onPlayer} />
+      <${Transport} s=${s} send=${send} colors=${colors} />
+      <${StatStrip} s=${s} colors=${colors} onOpen=${onStats} />
     </div>
     <aside class="side">${side}</aside>
   </main>`;
+}
+
+// ------------------------------------------------------------------ full stats and player cards
+
+const DESK = [["possession_pct", "Possession %"], ["shots", "Shots"], ["on_target", "On target"], ["xg", "xG (chance quality)"],
+  ["big_chances", "Big chances"], ["box_entries", "Box entries"], ["field_tilt_pct", "Field tilt %"], ["pass_accuracy_pct", "Pass accuracy %"],
+  ["progressive_passes", "Progressive passes"], ["ppda", "PPDA · lower = more pressing", true], ["corners", "Corners"], ["fouls", "Fouls", true]];
+
+function XgRace({ s, colors }) {
+  const snap = s.snapshot, meta = s.meta, max = s.durationMin;
+  if (!snap || !meta) return null;
+  const tl = snap.xg_timeline, W = 340, H = 100;
+  const top = Math.max(1, ...tl.map(p => Math.max(p[meta.home.id], p[meta.away.id]))) * 1.1;
+  const line = id => tl.map((p, i) => `${((i / Math.max(max, 1)) * W).toFixed(1)},${(H - (p[id] / top) * (H - 8)).toFixed(1)}`).join(" ");
+  return html`<svg viewBox="0 0 ${W} ${H}" width="100%" height=${H} preserveAspectRatio="none" role="img" aria-label="xG race">
+    <line x1="0" x2=${W} y1=${H - 0.5} y2=${H - 0.5} stroke="#283654" />
+    <polyline points=${line(meta.home.id)} fill="none" stroke=${colors[meta.home.id]} stroke-width="2.5" vector-effect="non-scaling-stroke" />
+    <polyline points=${line(meta.away.id)} fill="none" stroke=${colors[meta.away.id]} stroke-width="2.5" vector-effect="non-scaling-stroke" />
+  </svg>
+  <div class="legend"><span><i style=${{ background: colors[meta.home.id] }}></i>${meta.home.short} ${snap.teams[meta.home.id].xg} xG</span>
+    <span><i style=${{ background: colors[meta.away.id] }}></i>${meta.away.short} ${snap.teams[meta.away.id].xg} xG</span></div>`;
+}
+
+function Chaos({ snap }) {
+  const v = snap ? snap.control_chaos.value : 0, label = snap ? snap.control_chaos.label : "–";
+  const ang = Math.PI * (1 - v / 100), cx = 60, cy = 56, r = 46;
+  const color = v < 35 ? "#7fd1ff" : v < 60 ? "#ffcf5c" : "#ff8a5c";
+  return html`<div class="gauge">
+    <svg width="120" height="66" viewBox="0 0 120 66" aria-label="control vs chaos">
+      <path d="M14 56 A46 46 0 0 1 106 56" fill="none" stroke="#1d2842" stroke-width="10" stroke-linecap="round" />
+      <path d=${`M14 56 A46 46 0 0 1 ${cx + r * Math.cos(ang)} ${cy - r * Math.sin(ang)}`} fill="none" stroke=${color} stroke-width="10" stroke-linecap="round" />
+    </svg>
+    <div><div class="big" style=${{ color }}>${v}</div><div class="lab">${label}</div>
+      <div class="muted" style="font-size:12px">0 calm build-up · 100 end-to-end chaos</div></div></div>`;
+}
+
+function FullStats({ s, colors, onPlayer, onClose }) {
+  const snap = s.snapshot, meta = s.meta;
+  return html`<${Modal} onClose=${onClose} wide=${true}>
+    <h2>Match stats <span class="muted" style="font: 500 15px var(--sans)">${s.clock}</span></h2>
+    ${!snap || !meta ? html`<div class="empty">Waiting for kick-off…</div>` : html`<div class="fullstats">
+      <div>
+        <section><h3>Momentum <span class="right">who's on top, minute by minute</span></h3><${Momentum} s=${s} colors=${colors} /></section>
+        <section><h3>Chance quality race (xG)</h3><${XgRace} s=${s} colors=${colors} /></section>
+        <section><h3>Control vs chaos <span class="right">last 5 min</span></h3><${Chaos} snap=${snap} /></section>
+      </div>
+      <div>
+        <section><h3>Team stats</h3><${StatList} s=${s} colors=${colors} keys=${DESK} /></section>
+        <section><h3>Top players</h3><div class="tops">${snap.top_players.filter(p => p.touches).map(p => html`
+          <button class="tp" onClick=${() => onPlayer(p.id)}><b style=${{ background: colors[p.team_id], color: inkOn(colors[p.team_id] || "#fff") }}>${p.number}</b>
+            <span>${p.name}<small>${[p.goals && `${p.goals} goal${p.goals > 1 ? "s" : ""}`, p.assists && `${p.assists} assist`, `${p.passes} passes`, p.xg && `${p.xg} xG`].filter(Boolean).join(" · ")}</small></span></button>`)}</div></section>
+      </div></div>`}
+  <//>`;
+}
+
+const POS = { GK: "Goalkeeper", DF: "Defender", MF: "Midfielder", FW: "Forward" };
+
+function PlayerCard({ p, meta, colors, onAsk, onClose }) {
+  const team = teamOf(meta, p.team_id), col = colors[p.team_id] || "#fff";
+  const rows = [["Goals", p.goals], ["Assists", p.assists], ["Shots", p.shots], ["xG", p.xg], ["Key passes", p.key_passes],
+    ["Passes", `${p.passes_completed}/${p.passes}`], ["Pass accuracy", `${p.pass_accuracy_pct}%`], ["Dribbles won", p.dribbles_won],
+    ["Tackles", p.tackles], ["Interceptions", p.interceptions], ["Saves", p.saves]].filter(([, v]) => v && v !== "0/0" && v !== "0%");
+  return html`<${Modal} onClose=${onClose}>
+    <div class="pcard"><b class="num" style=${{ background: col, color: inkOn(col) }}>${p.number}</b>
+      <div><h2>${p.name}</h2><div class="muted">${team ? team.name : ""} · ${p.position || POS[p.role] || ""}${p.on_pitch ? "" : " · off the pitch"}</div></div></div>
+    <div class="pstats">${rows.length ? rows.map(([k, v]) => html`<div><b>${v}</b><span>${k}</span></div>`) : html`<div class="muted">Quiet so far: no notable actions yet.</div>`}</div>
+    <button class="btn primary" onClick=${() => { onAsk(`How is ${p.name} playing?`); onClose(); }}>💬 Ask the crew about ${p.name.split(" ").slice(-1)[0]}</button>
+  <//>`;
 }
 
 // ------------------------------------------------------------------ modals
@@ -864,7 +967,7 @@ function App() {
   const [profile, setProfile] = useState({ persona: params.get("style") === "tactics" ? "analyst" : "casual",
     language: LANGS[params.get("lang")] ? params.get("lang") : "en", favorite_team: params.get("team"), favorite_player: null });
   const [compare, setCompare] = useState(null), [gen, setGen] = useState(false), [proof, setProof] = useState(null), [voiceOn, setVoiceOn] = useState(false);
-  const [s, send, ask] = useMatch(screen === "watch" ? matchId : null, profile);
+  const [s, send, ask, closeCard] = useMatch(screen === "watch" ? matchId : null, profile);
   const colors = useMemo(() => teamColors(s.meta), [s.meta]);
   const speaking = useVoice(matchId, s.lastAI, voiceOn && screen === "watch");
   const onProof = useCallback((a, m) => setProof({ ai: a, moment: m }), []);
@@ -882,7 +985,7 @@ function App() {
   return html`<div>
     ${screen === "start" && html`<${Start} matches=${matches} clubs=${clubs} matchId=${matchId} setMatchId=${setMatchId} profile=${profile}
       setProfile=${setProfile} onGenerate=${() => setGen(true)} onKickOff=${() => { setVoiceOn(voice); setScreen("watch"); }} />`}
-    ${screen === "watch" && html`<${Watch} s=${s} send=${send} ask=${ask} matchId=${matchId} summary=${summary} profile=${profile} setProfile=${setProfile}
+    ${screen === "watch" && html`<${Watch} s=${s} send=${send} ask=${ask} closeCard=${closeCard} matchId=${matchId} summary=${summary} profile=${profile} setProfile=${setProfile}
       colors=${colors} voice=${voice} voiceOn=${voiceOn} setVoiceOn=${setVoiceOn} speaking=${speaking} onBack=${() => setScreen("start")}
       onCompare=${setCompare} onProof=${onProof} />`}
     ${proof && html`<${ProofModal} ai=${proof.ai} moment=${proof.moment} onClose=${() => setProof(null)} />`}

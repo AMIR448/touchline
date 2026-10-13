@@ -15,6 +15,13 @@ class FakeVoice:
         return b"ID3-fake-mp3"
 
 
+def recv(ws, kind):
+    """Next message of this kind; skips others (e.g. commentary re-sent after a jump)."""
+    while (msg := ws.receive_json())["type"] != kind:
+        pass
+    return msg
+
+
 @pytest.fixture(scope="module")
 def client():
     app.state.broadcast = BroadcastService(FakeAgents())  # never call real models from tests
@@ -86,22 +93,20 @@ def test_pause_and_seek(client):
         assert status["type"] == "status" and status["playing"] is False
 
         ws.send_json({"cmd": "seek", "minute": 60})
-        reset = ws.receive_json()
-        assert reset["type"] == "reset"
+        reset = recv(ws, "reset")
         assert reset["state"]["match"]["clock"].startswith("59:")  # state rebuilt up to the hour mark
         assert all(len(team) == 11 for team in reset["lineups"].values())  # for drawing players after a jump
-        status = ws.receive_json()
-        assert status["playing"] is False
+        assert recv(ws, "status")["playing"] is False
 
         ws.send_json({"cmd": "seek", "minute": 10})
-        assert ws.receive_json()["state"]["match"]["clock"].startswith(("09:", "10:"))
-        ws.receive_json()
+        assert recv(ws, "reset")["state"]["match"]["clock"].startswith(("09:", "10:"))
+        recv(ws, "status")
 
         ws.send_json({"cmd": "speed", "value": 30})
-        assert ws.receive_json()["speed"] == 30
+        assert recv(ws, "status")["speed"] == 30
 
         ws.send_json({"cmd": "nonsense"})
-        assert ws.receive_json()["type"] == "error"
+        assert recv(ws, "error")["type"] == "error"
 
 
 def test_unknown_match(client):
@@ -172,8 +177,8 @@ def test_ask_the_match(client):
         ws.send_json({"cmd": "seek", "minute": 30})
         ws.receive_json(), ws.receive_json()  # reset, status
         ws.send_json({"cmd": "ask", "id": "q1", "question": "What's the score?"})
-        msg = ws.receive_json()
-        assert msg["type"] == "answer" and msg["id"] == "q1" and msg["source"] == "ai"
+        msg = recv(ws, "answer")
+        assert msg["id"] == "q1" and msg["source"] == "ai"
         assert msg["clock"] < "31"  # answered as of the viewer's minute
 
 
@@ -228,13 +233,39 @@ def test_switching_profile_resends_what_is_already_written(client):
     with client.websocket_connect(f"/ws/matches/{match_id}?speed=1&autoplay=false") as ws:
         ws.receive_json(), ws.receive_json()  # hello, status
         ws.send_json({"cmd": "seek", "minute": 30})
-        moments = ws.receive_json()["state"]["moments"]
-        ws.receive_json()  # status
+        moments = recv(ws, "reset")["state"]["moments"]
+        recv(ws, "status")
         m = next(x for x in moments if wants_commentary(spanish, x))
         client.app.state.broadcast.cache[f"cover|{feed}|{m['id']}|{spanish.key()}"] = {
             "moment_id": m["id"], "profile_key": spanish.key(), "caption": "¡Golazo!", "line": "¡Qué jugada!",
             "language": "es", "source": "ai", "insight": None, "trace": []}
         ws.send_json({"cmd": "profile", "persona": "casual", "language": "es"})
-        assert ws.receive_json()["type"] == "profile"
-        msg = ws.receive_json()
-        assert msg["type"] == "commentary" and msg["moment"]["id"] == m["id"] and msg["coverage"]["line"] == "¡Qué jugada!"
+        recv(ws, "profile")
+        while (msg := recv(ws, "commentary"))["moment"]["id"] != m["id"]:
+            pass
+        assert msg["coverage"]["line"] == "¡Qué jugada!"
+
+
+def test_seek_keeps_written_commentary_and_player_cards(client):
+    from broadcast.models import ViewerProfile
+    from broadcast.relevance import wants_commentary
+    from server.app import MATCHES
+    match_id = client.get("/api/matches").json()[0]["match_id"]
+    feed = MATCHES[match_id][0]["match_id"]
+    viewer = ViewerProfile()
+    with client.websocket_connect(f"/ws/matches/{match_id}?speed=1&autoplay=false&persona=casual") as ws:
+        ws.receive_json(), ws.receive_json()  # hello, status
+        ws.send_json({"cmd": "seek", "minute": 30})
+        reset = recv(ws, "reset")
+        m = next(x for x in reset["state"]["moments"] if wants_commentary(viewer, x))
+        client.app.state.broadcast.cache[f"cover|{feed}|{m['id']}|{viewer.key()}"] = {
+            "moment_id": m["id"], "profile_key": viewer.key(), "caption": "Goal", "line": "What a goal.",
+            "language": "en", "source": "ai", "insight": None, "trace": []}
+        ws.send_json({"cmd": "seek", "minute": 31})
+        recv(ws, "reset")
+        while (msg := recv(ws, "commentary"))["moment"]["id"] != m["id"]:
+            pass
+        pid = reset["lineups"][next(iter(reset["lineups"]))][9]
+        ws.send_json({"cmd": "player", "id": pid})
+        msg = recv(ws, "player")
+        assert msg["player"]["id"] == pid and "goals" in msg["player"]

@@ -99,6 +99,13 @@ class Playback:
                 return
             await self.send({"type": "profile", "profile": self.profile.model_dump()})
             await self._resend_written()
+        elif cmd == "player":  # a player's card, as of now in this viewer's playback
+            pid = str(msg.get("id", ""))
+            if pid in self.analyzer.players:
+                await self.send({"type": "player", "player": self.analyzer.player(pid)})
+            else:
+                await self.send({"type": "error", "message": "unknown player"})
+            return
         elif cmd == "ask":
             await self._ask(msg)
             return
@@ -131,8 +138,11 @@ class Playback:
             self.idx += 1
         self._rebase(target_ms)
         last = self.events[self.idx - 1]
-        await self.send({"type": "reset", "event": self._with_display(last), "state": self.analyzer.snapshot(),
+        # every moment so far (not just the latest 20), so the feed keeps early goals after a jump
+        await self.send({"type": "reset", "event": self._with_display(last), "state": self.analyzer.snapshot(max_moments=500),
                          "lineups": self._lineups()})
+        await self._resend_written()  # moments jumped over keep the lines the crew already wrote
+        self._backfill_big_moments()
 
     def _lineups(self) -> dict[str, list[str | None]]:
         """Who is on the pitch right now, per team, aligned with the formation slots (None = sent off)."""
@@ -246,6 +256,24 @@ class Playback:
                 if recap and recap.get("recap"):
                     await self.send({"type": "recap", "moment_id": moment["id"], **recap})
 
+    def _backfill_big_moments(self, limit: int = 3) -> None:
+        """Big moments the viewer jumped over that nobody has written yet (goals, red cards) get written now,
+        from the match as it stood at that moment, and slot quietly into the feed."""
+        if not self.broadcast:
+            return
+        missing = [m for m in self.analyzer.snapshot(max_moments=1000)["moments"]
+                   if m["importance"] >= 0.6 and wants_commentary(self.profile, m)
+                   and not self.broadcast.lookup("cover", self.match_id, m["id"], self.profile)]
+        if not missing:
+            return
+        wanted = {m["id"] for m in missing[-limit:]}
+        a = MatchAnalyzer()
+        for ev in self.events[:self.idx]:
+            for m in a.process(ev):
+                if m.id in wanted:
+                    players = {pid: a.player(pid) for pid in a.players}
+                    self._spawn(self._commentate(m.to_dict(), a.snapshot(), players, self.profile, replay=True))
+
     async def _ask(self, msg: dict[str, Any]) -> None:
         """A fan question, answered from the match as it stands right now (no spoilers)."""
         question = str(msg.get("question", "")).strip()[:MAX_QUESTION_CHARS]
@@ -295,13 +323,18 @@ class Playback:
         for task in list(self.ai_tasks):
             task.cancel()
 
-    async def _commentate(self, moment: dict, snapshot: dict, players: dict, profile: ViewerProfile) -> None:
+    async def _commentate(self, moment: dict, snapshot: dict, players: dict, profile: ViewerProfile,
+                          replay: bool = False) -> None:
         try:
             coverage = await self.broadcast.cover(self.match_id, moment, snapshot, players, profile)
         except asyncio.CancelledError:
             raise
         except Exception:
             log.exception("commentary failed for %s", moment["id"])
+            return
+        if replay:  # a moment from the past: fill the feed, no caption, no voice
+            await self.send({"type": "commentary", "coverage": coverage, "replay": True,
+                             "moment": {k: moment[k] for k in ("id", "type", "clock", "title", "importance")}})
             return
         if self.voice:  # start the audio now; the browser's request then finds it ready or in flight
             excited = (coverage.get("insight") or {}).get("angle") in ("drama", "turning_point")

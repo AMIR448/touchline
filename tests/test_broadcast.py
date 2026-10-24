@@ -40,6 +40,15 @@ def test_factcheck_rejects_invented_numbers():
     assert not result.ok and "72" in result.problems[0]
 
 
+def test_factcheck_checks_scorelines_as_a_pair():
+    # 3 and 1 both appear in the facts, but 3-1 was never the score
+    ctx = {"score": "Kestrel 2-1 Marlowe", "shots": 3}
+    result = check(["Kestrel lead 3-1"], [ctx])
+    assert not result.ok and "3-1" in result.problems[0]
+    assert check(["Kestrel lead 2-1", "Marlowe trail 1–2", "from 0-0 at the break"], [ctx]).ok
+    assert check(["Kestrel's 4-3-3 against Marlowe's 4-2-3-1"], [{"shape": "4-3-3 v 4-2-3-1"}]).ok
+
+
 def test_factcheck_percentages_from_probabilities():
     assert 19 in allowed_numbers({"shot_xg": 0.19})
     assert check(["a 19% chance"], [{"shot_xg": 0.19}]).ok

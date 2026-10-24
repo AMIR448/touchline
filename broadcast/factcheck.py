@@ -15,6 +15,8 @@ from typing import Any, Iterable
 NUMBER = re.compile(r"(?<![\w.])(\d+(?:[.,]\d+)?)")
 NON_LATIN = re.compile(r"[\u0370-\u03FF\u0400-\u052F\u0590-\u05FF\u0600-\u06FF\u0E00-\u0E7F\u3040-\u30FF\u4E00-\u9FFF]")
 ALWAYS_ALLOWED = {45.0, 90.0}  # "first 45 minutes", "the 90 minutes"
+# A scoreline ("2-1", "2–1"), but not part of a formation like 4-3-3 or 4-2-3-1.
+SCORELINE = re.compile(r"(?<![\d\-–])(\d{1,2})\s?[-–]\s?(\d{1,2})(?![\d\-–])")
 
 
 @dataclass
@@ -62,15 +64,25 @@ def _supported(token: str, allowed: set[float]) -> bool:
     return any(round(a, decimals) == value for a in allowed)
 
 
+def scorelines(text: str) -> set[tuple[int, int]]:
+    """Scorelines in either order: "2-1 up" and "1-2 down" are the same score."""
+    return {tuple(sorted((int(a), int(b)))) for a, b in SCORELINE.findall(text)}
+
+
 def check(texts: list[str], contexts: list[Any], squad_names: Iterable[str] = ()) -> CheckResult:
     allowed = allowed_numbers(*contexts)
     context_text = json.dumps(contexts, ensure_ascii=False)
+    real_scores = scorelines(context_text) | {(0, 0)}  # "from 0-0" is always true
     problems = []
     for text in texts:
+        # each number of a wrong scoreline may exist elsewhere in the facts ("3 shots"), so check the pair
+        for a, b in SCORELINE.findall(text):
+            if tuple(sorted((int(a), int(b)))) not in real_scores:
+                problems.append(f"the score {a}-{b} is not a score from this match")
         stray = NON_LATIN.findall(text)
         if stray:  # models occasionally leak letters from another alphabet ("Kestrел")
             problems.append(f"the text contains non-Latin characters ({''.join(sorted(set(stray)))[:10]}); use the target language's normal alphabet")
-        for token in NUMBER.findall(text):
+        for token in NUMBER.findall(SCORELINE.sub(" ", text)):  # scorelines were checked as pairs above
             if not _supported(token, allowed):
                 problems.append(f"the number {token} is not in the facts")
         for name in squad_names:
@@ -85,3 +97,22 @@ def check_names_kept(texts: list[str], source_text: str, squad_names: Iterable[s
     missing = [n for n in squad_names if n in source_text and n not in joined]
     return CheckResult(ok=not missing, problems=[f"keep the player name '{n}' exactly as written, in Latin letters"
                                                  for n in missing])
+
+
+def marks(text: str, contexts: list[Any], squad_names: Iterable[str] = ()) -> list[dict]:
+    """Every fact in `text` and whether the facts back it up, as character spans for the UI to highlight.
+    Same rules as check(); used by the "try to fool the fact-checker" box."""
+    allowed = allowed_numbers(*contexts)
+    context_text = json.dumps(contexts, ensure_ascii=False)
+    real_scores = scorelines(context_text) | {(0, 0)}
+    out = []
+    for m in SCORELINE.finditer(text):
+        a, b = m.groups()
+        out.append({"start": m.start(), "end": m.end(), "kind": "score", "ok": tuple(sorted((int(a), int(b)))) in real_scores})
+    blanked = SCORELINE.sub(lambda m: " " * len(m.group()), text)  # same offsets, scorelines removed
+    for m in NUMBER.finditer(blanked):
+        out.append({"start": m.start(), "end": m.end(), "kind": "number", "ok": _supported(m.group(1), allowed)})
+    for name in squad_names:
+        for m in re.finditer(re.escape(name), text):
+            out.append({"start": m.start(), "end": m.end(), "kind": "name", "ok": name in context_text})
+    return sorted(out, key=lambda x: x["start"])

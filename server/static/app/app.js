@@ -213,11 +213,13 @@ const playerById = meta => {
 };
 
 // The provenance chip: fans see a small badge; one click shows how that exact line was made.
+const caughtIn = trace => (trace || []).filter(x => x.agent.includes("fact_checker") && x.note.startsWith("rejected")).length;
+
 function ProofChip({ ai, onProof }) {
   if (!ai) return null;
-  const ok = ai.source === "ai";
+  const ok = ai.source === "ai", caught = caughtIn(ai.trace);
   return html`<button class=${"chip " + (ok ? "ai" : "fb")} onClick=${e => { e.stopPropagation(); onProof && onProof(ai); }}
-    title="How was this made?">${ok ? "✓ Fact-checked" : "Safe fallback"}${onProof ? " ⓘ" : ""}</button>`;
+    title="How was this made?">${ok ? "✓ Fact-checked" : "Safe fallback"}${caught ? ` · ${caught} error${caught > 1 ? "s" : ""} caught` : ""}${onProof ? " ⓘ" : ""}</button>`;
 }
 
 // ------------------------------------------------------------------ pitch: 22 players that hold their shape
@@ -443,6 +445,20 @@ function useStageFit(ref) {
   return w;
 }
 
+// The crew at work on the line now on air: its real trace, replayed step by step as the caption comes up.
+const SHORT = { analyst: "Analyst", commentator: "Commentator", fact_checker: "Fact-checker", producer: "Producer" };
+function CrewStrip({ trace }) {
+  const steps = useMemo(() => [...trace.filter(st => SHORT[st.agent]), { agent: "air", ms: 0, note: "" }], [trace]);
+  const [n, setN] = useState(1);
+  useEffect(() => { if (n < steps.length) { const t = setTimeout(() => setN(n + 1), 420); return () => clearTimeout(t); } }, [n, steps.length]);
+  return html`<div class="crew">${steps.slice(0, n).map((st, i) => {
+    if (st.agent === "air") return html`<span class="cs air" key=${i}>📺 On air</span>`;
+    const rej = st.note.startsWith("rejected"), ok = st.note === "passed";
+    const what = rej ? "blocked: " + st.note.replace(/^rejected: /, "").split("; ")[0] : st.note.startsWith("rewrite") ? "rewrote it" : ok ? "✓" : "";
+    return html`<span class=${"cs" + (rej ? " rej" : ok ? " ok" : "")} key=${i}>${AGENT[st.agent][0]} ${SHORT[st.agent]}${what && html` <i>${what}</i>`}</span>`;
+  })}</div>`;
+}
+
 const Eq = () => html`<span class="eq" aria-label="speaking"><i></i><i></i><i></i><i></i></span>`;
 
 function Broadcast({ s, colors, showLower = true, onProof, speaking, onPlayer }) {
@@ -475,6 +491,7 @@ function Broadcast({ s, colors, showLower = true, onProof, speaking, onPlayer })
     </div>
     ${banner && html`<div class="banner" style=${{ "--c": banner.color }}><div>${banner.label}<small>${banner.title}</small></div></div>`}
     ${lower && html`<div class="lower" key=${lower.moment.id + (lower.pending ? "p" : "")}>
+      ${lower.ai && lower.ai.trace && html`<${CrewStrip} trace=${lower.ai.trace} />`}
       <div class=${"cap" + (lower.pending ? " pending" : "")}>${speaking === lower.moment.id && html`<${Eq} />`}${lower.caption}</div>
       <div class="line"><p>${lower.line || html`<span class="muted">The broadcast crew is on it…</span>`}</p>
         <${ProofChip} ai=${lower.ai} onProof=${ai => onProof(ai, lower.moment)} /></div></div>`}
@@ -937,9 +954,39 @@ function Modal({ onClose, wide, children }) {
     <button class="btn sm x" onClick=${onClose}>Close ✕</button>${children}</div></div>`;
 }
 
-function ProofModal({ ai, moment, onClose }) {
+// Try to fool the fact-checker: edit the line, and the same code that checks every AI line checks yours, live.
+function FoolBox({ matchId, moment, ai }) {
+  const [text, setText] = useState(ai.line), [res, setRes] = useState(null);
+  useEffect(() => {
+    const sent = text, t = setTimeout(() => post(`/api/matches/${matchId}/factcheck`, { moment_id: moment.id, text: sent, profile: ai.profile_key || "analyst|en|-|-" })
+      .then(r => setRes({ ...r, text: sent })).catch(() => setRes(null)), 250);
+    return () => clearTimeout(t);
+  }, [text]);
+  const marked = () => {
+    const out = [];
+    let i = 0;
+    for (const m of res.marks) {
+      if (m.start < i) continue;
+      out.push(res.text.slice(i, m.start));
+      out.push(html`<mark class=${m.ok ? "ok" : "bad"} title=${m.ok ? "In the facts" : "Not in the facts"}>${res.text.slice(m.start, m.end)}</mark>`);
+      i = m.end;
+    }
+    out.push(res.text.slice(i));
+    return out;
+  };
+  return html`<div class="fool">
+    <h3>🧪 Try to fool the fact-checker</h3>
+    <p class="muted">Change the score, a number or a player's name. The code that checks every AI line before it goes on air checks yours, as you type.</p>
+    <textarea rows="3" maxlength="600" value=${text} onInput=${e => setText(e.target.value)}></textarea>
+    ${res && html`<div class="marked">${marked()}</div>
+      <div class=${"verdict " + (res.ok ? "ok" : "bad")}>${res.ok ? "✅ Passes: every number and name is in the facts, so this could go on air."
+        : html`<b>⛔ Blocked.</b> Sent back to the writer: ${res.problems.join("; ")}.`}</div>`}
+  </div>`;
+}
+
+function ProofModal({ ai, moment, matchId, onClose }) {
   const total = ai.trace.reduce((a, x) => a + x.ms, 0);
-  const caught = ai.trace.filter(x => x.agent.includes("fact_checker") && x.note.startsWith("rejected")).length;
+  const caught = caughtIn(ai.trace);
   return html`<${Modal} onClose=${onClose}>
     <h2>How this ${moment.type === "qa" ? "answer" : "line"} was made</h2>
     <div class="muted">${moment.type === "qa" ? "💬" : icon(moment)} ${moment.clock} · ${moment.title}</div>
@@ -952,8 +999,9 @@ function ProofModal({ ai, moment, onClose }) {
     </div>
     ${ai.insight && ai.insight.why_it_matters && html`<p class="insight">🧠 “${ai.insight.why_it_matters}”</p>`}
     <${TraceSteps} trace=${ai.trace} />
-    <p class="muted" style="font-size:12px;margin-top:14px">The fact-checker is plain code: any number or player name that isn't in the
+    <p class="muted" style="font-size:12px;margin-top:14px">The fact-checker is plain code: any number, score or player name that isn't in the
       stats engine's facts sends the draft back for a rewrite.</p>
+    ${matchId && moment.type !== "qa" && moment.id && html`<${FoolBox} matchId=${matchId} moment=${moment} ai=${ai} key=${moment.id} />`}
   <//>`;
 }
 
@@ -1032,7 +1080,7 @@ function App() {
     ${screen === "watch" && html`<${Watch} s=${s} send=${send} ask=${ask} closeCard=${closeCard} matchId=${matchId} summary=${summary} profile=${profile} setProfile=${setProfile}
       colors=${colors} voice=${voice} voiceOn=${voiceOn} setVoiceOn=${setVoiceOn} speaking=${speaking} onBack=${() => setScreen("start")}
       onCompare=${setCompare} onProof=${onProof} />`}
-    ${proof && html`<${ProofModal} ai=${proof.ai} moment=${proof.moment} onClose=${() => setProof(null)} />`}
+    ${proof && html`<${ProofModal} ai=${proof.ai} moment=${proof.moment} matchId=${matchId} onClose=${() => setProof(null)} />`}
     ${compare && html`<${CompareModal} matchId=${matchId} moment=${compare} meta=${s.meta} onClose=${() => setCompare(null)} />`}
     ${gen && html`<${GenerateModal} clubs=${clubs} scenarios=${scenarios} onClose=${() => setGen(false)}
       onCreated=${id => { setGen(false); loadMatches(id); }} />`}

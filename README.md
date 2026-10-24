@@ -7,7 +7,7 @@ Built for *Inside the Game: Developer Hackathon* (Microsoft + Premier League), O
 
 A web app where you press **Play** on a (synthetic) match and watch, in real time:
 
-- a 2D pitch with the ball moving event by event,
+- the match drawn live from the event feed: a 2D tactical pitch, or a **3D stadium with broadcast cameras** (TV, behind the goal, follow the ball, tactical) and an Auto director that cuts behind the goal for every shot. It is drawn in the browser from the same data, so the picture can never disagree with the stats,
 - broadcast-style overlays: stats, key moments, *why* a moment mattered,
 - a live narrative and an automatic full-time recap,
 - all of it **personalized**: analyst vs casual fan, favourite club, favourite player, language.

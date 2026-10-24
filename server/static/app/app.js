@@ -275,12 +275,14 @@ function shapeTargets(meta, lineups, last) {
   return out;
 }
 
-function drawLines(ctx, w, hgt) {
+function drawLines(ctx, w, hgt, vignette = true) {
   const k = w / PL;
   for (let i = 0; i < 12; i++) { ctx.fillStyle = i % 2 ? "#0f4a2b" : "#0d4427"; ctx.fillRect((i * w) / 12, 0, w / 12 + 1, hgt); }
-  const g = ctx.createRadialGradient(w / 2, hgt / 2, hgt * 0.2, w / 2, hgt / 2, w * 0.75);
-  g.addColorStop(0, "rgba(0,0,0,0)"); g.addColorStop(1, "rgba(0,0,0,.45)");
-  ctx.fillStyle = g; ctx.fillRect(0, 0, w, hgt);
+  if (vignette) {
+    const g = ctx.createRadialGradient(w / 2, hgt / 2, hgt * 0.2, w / 2, hgt / 2, w * 0.75);
+    g.addColorStop(0, "rgba(0,0,0,0)"); g.addColorStop(1, "rgba(0,0,0,.45)");
+    ctx.fillStyle = g; ctx.fillRect(0, 0, w, hgt);
+  }
   ctx.strokeStyle = "rgba(255,255,255,.5)"; ctx.fillStyle = "rgba(255,255,255,.6)"; ctx.lineWidth = Math.max(1.2, k * 0.15);
   const m = k * 1.2;
   ctx.strokeRect(m, m, w - 2 * m, hgt - 2 * m);
@@ -394,6 +396,33 @@ function Pitch({ s, colors, onPlayer }) {
   return html`<canvas ref=${canvas} onClick=${click} class=${onPlayer ? "clickable" : ""} title=${onPlayer ? "Click a player for their stats" : ""}></canvas>`;
 }
 
+// The 3D stadium: same targets and ball as the 2D pitch, drawn with three.js. Loaded only when chosen.
+let stadiumLib = null;
+const loadStadium = () => (stadiumLib ||= import("./stadium3d.js"));
+const CAMS = [["auto", "🎬 Auto", "Director: TV camera, cuts behind the goal for big moments"], ["tv", "📺 TV", "Main broadcast camera"],
+  ["goal", "🥅 Goal", "Behind the goal"], ["follow", "🎯 Ball", "Follow the ball"], ["top", "🗺️ Tactical", "The whole pitch from above"]];
+
+function Pitch3D({ s, colors, onPlayer, camera, onFail }) {
+  const canvas = useRef(null), live = useRef({});
+  const people = useMemo(() => playerById(s.meta), [s.meta]);
+  const targets = useMemo(() => shapeTargets(s.meta, s.lineups, s.last), [s.meta, s.lineups, s.last]);
+  live.current = { s, colors, people, targets, camera, onPlayer };
+  useEffect(() => {
+    let stadium = null, gone = false;
+    loadStadium().then(m => { if (!gone) stadium = m.createStadium(canvas.current, { live: () => live.current, drawLines }); })
+      .catch(e => { console.error("3D view unavailable", e); onFail(); });  // no WebGL: back to 2D
+    return () => { gone = true; stadium && stadium.dispose(); };
+  }, []);
+  return html`<canvas ref=${canvas} class=${onPlayer ? "clickable" : ""} title=${onPlayer ? "Click a player for their stats" : ""}></canvas>`;
+}
+
+// A per-viewer setting remembered in this browser (2D/3D, camera). Storage can be blocked: then it just isn't remembered.
+function usePref(name, fallback) {
+  const [v, setV] = useState(() => { try { return localStorage.getItem("tl." + name) || fallback; } catch { return fallback; } });
+  const set = x => { setV(x); try { localStorage.setItem("tl." + name, x); } catch { /* not remembered */ } };
+  return [v, set];
+}
+
 // Sizes the left column to the largest 105:68 pitch that fits the height, so the pitch, timeline and
 // stats strip line up and the side panel takes the rest of the width.
 function useStageFit(ref) {
@@ -423,17 +452,27 @@ function Broadcast({ s, colors, showLower = true, onProof, speaking, onPlayer })
   const badges = s.badges.filter(b => b.until > now);
   const banner = s.banner && s.banner.until > now ? s.banner : null;
   const lower = showLower && s.lower && s.lower.until > now ? s.lower : null; // off air after ~10s, like TV
-  return html`<div class="pitchwrap"><div class="frame">
-    <${Pitch} s=${s} colors=${colors} onPlayer=${onPlayer} />
+  const [view, setView] = usePref("view", "2d"), [cam, setCam] = usePref("cam", "auto");
+  return html`<div class="pitchwrap"><div class=${"frame" + (view === "3d" ? " v3d" : "")}>
+    ${view === "3d" ? html`<${Pitch3D} s=${s} colors=${colors} onPlayer=${onPlayer} camera=${cam} onFail=${() => setView("2d")} />`
+                    : html`<${Pitch} s=${s} colors=${colors} onPlayer=${onPlayer} />`}
     ${meta && html`<div class="scorebug">
       <div class="team"><i style=${{ background: colors[meta.home.id] }}></i>${meta.home.short}</div>
       <div class="score">${score[meta.home.id] ?? 0}–${score[meta.away.id] ?? 0}</div>
       <div class="team away">${meta.away.short}<i style=${{ background: colors[meta.away.id] }}></i></div>
       <div class="clock">${s.clock}<small>${s.period === 1 ? "1H" : "2H"}</small></div>
     </div>`}
+    <div class="rcol">
+    <div class="viewbar">
+      <div class="seg">${["2d", "3d"].map(v => html`<button class=${view === v ? "on" : ""} onClick=${() => setView(v)}
+        title=${v === "3d" ? "3D stadium with broadcast cameras" : "Flat tactical pitch"}>${v.toUpperCase()}</button>`)}</div>
+      ${view === "3d" && html`<div class="seg cams">${CAMS.map(([k, label, title]) => html`<button class=${cam === k ? "on" : ""}
+        onClick=${() => setCam(k)} title=${title}><span class="ci">${label.split(" ")[0]}</span><span class="cl">${label.split(" ")[1]}</span></button>`)}</div>`}
+    </div>
     <div class="badges">${badges.map(b => html`<div class="badge" key=${b.id}>
       <div class="v">${b.value}<small>${b.unit}</small></div>
       <div class="l"><b>${b.label}</b>${b.player ? b.player.name : ""}</div></div>`)}</div>
+    </div>
     ${banner && html`<div class="banner" style=${{ "--c": banner.color }}><div>${banner.label}<small>${banner.title}</small></div></div>`}
     ${lower && html`<div class="lower" key=${lower.moment.id + (lower.pending ? "p" : "")}>
       <div class=${"cap" + (lower.pending ? " pending" : "")}>${speaking === lower.moment.id && html`<${Eq} />`}${lower.caption}</div>

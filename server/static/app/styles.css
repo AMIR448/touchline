@@ -93,7 +93,16 @@ h3 .right { margin-left: auto; font: 500 11px var(--sans); letter-spacing: 0; te
 .scorebug .score { background: var(--text); color: var(--bg); font-size: 1.1em; min-width: 2.6em; justify-content: center; letter-spacing: .12em; }
 .scorebug .clock { background: rgba(7, 11, 20, .92); color: var(--ai); font-variant-numeric: tabular-nums; border-left: 1px solid var(--line2); }
 .scorebug .clock small { color: var(--muted); font-size: .55em; margin-left: .5em; letter-spacing: .1em; }
-.badges { position: absolute; top: 3.2%; right: 2.4%; display: flex; flex-direction: column; gap: 8px; align-items: flex-end; }
+.rcol { position: absolute; top: 3.2%; right: 2.4%; display: flex; flex-direction: column; gap: 8px; align-items: flex-end; }
+.badges { display: flex; flex-direction: column; gap: 8px; align-items: flex-end; }
+.viewbar { display: flex; gap: 6px; align-items: center; }
+.viewbar .seg { display: inline-flex; background: rgba(7, 11, 20, .82); border: 1px solid var(--line2); border-radius: 9px; padding: 2px; gap: 2px;
+  backdrop-filter: blur(6px); }
+.viewbar button { border: 0; background: none; color: var(--muted); font: 700 12px/1 var(--display); letter-spacing: .1em; padding: 6px 9px;
+  border-radius: 7px; display: inline-flex; gap: 5px; align-items: center; white-space: nowrap; }
+.viewbar button:hover { color: var(--text); }
+.viewbar button.on { background: var(--ai); color: #032; }
+.frame.v3d { background: #05080f; }
 .badge { display: flex; align-items: center; gap: 10px; background: rgba(7, 11, 20, .9); border: 1px solid var(--line2); border-left: 4px solid var(--gold);
   border-radius: 10px; padding: 7px 12px; animation: slidein .35s ease; min-width: 180px; }
 .badge .v { font: 800 clamp(18px, 2vw, 26px)/1 var(--display); color: var(--gold); }
@@ -285,6 +294,8 @@ button.chip { cursor: pointer; } button.chip:hover { filter: brightness(1.25); }
   .lower { display: none; }
   .badges .badge { min-width: 0; padding: 5px 8px; }
   .badge .l { display: none; }
+  .viewbar { flex-direction: column; align-items: flex-end; }
+  .viewbar .cl { display: none; }
 }
 .side { container-type: inline-size; }
 @container (max-width: 470px) { .tabs button { font-size: 12px; letter-spacing: .06em; padding: 9px 4px 10px; } }

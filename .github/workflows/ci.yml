@@ -26,4 +26,4 @@ jobs:
         with:
           node-version: "22"
       - name: Web app parses
-        run: node --check server/static/app/app.js
+        run: node --check server/static/app/app.js && node --check server/static/app/stadium3d.js

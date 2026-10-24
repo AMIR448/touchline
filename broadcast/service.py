@@ -13,6 +13,8 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from opentelemetry import trace
+
 from .agents import AgentPool
 from .crew import BroadcastCrew
 from .limits import DailyBudget
@@ -21,6 +23,7 @@ from .models import Coverage, Step, ViewerProfile
 from .qa import MatchQA
 
 log = logging.getLogger("touchline.broadcast")
+_tracer = trace.get_tracer("touchline.broadcast")
 
 
 class BroadcastService:
@@ -99,7 +102,8 @@ class BroadcastService:
             return {"answer": "The AI crew has reached today's limit on this demo. Please try again tomorrow.",
                     "follow_ups": [], "source": "fallback", "tools": [], "trace": [vars(Step("budget", 0, BUDGET_NOTE))]}
         async with self.limit:
-            return await self.qa.ask(question, tools, profile)
+            with _tracer.start_as_current_span("match_qa", attributes={"touchline.question": question[:200]}):
+                return await self.qa.ask(question, tools, profile)
 
     async def cover_many(self, match_id: str, moment: dict, snapshot: dict, players: dict[str, dict],
                          profiles: list[ViewerProfile]) -> list[dict]:
@@ -111,7 +115,11 @@ class BroadcastService:
         if missing:
             fresh = {}
             async with self.limit:
-                for c in await self.crew.cover(moment, snapshot, players, missing):
+                # one span per moment: the crew's workflow, every agent call and fact-check nest under it
+                with _tracer.start_as_current_span(f"cover {moment['type']}", attributes={
+                        "touchline.match": match_id, "touchline.moment": moment["id"], "touchline.viewers": len(missing)}):
+                    covered = await self.crew.cover(moment, snapshot, players, missing)
+                for c in covered:
                     fresh[c.profile_key] = c.to_dict()
                     if _keepable(fresh[c.profile_key]):
                         self.cache[f"cover|{match_id}|{moment['id']}|{c.profile_key}"] = fresh[c.profile_key]

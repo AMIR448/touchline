@@ -23,12 +23,25 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from agent_framework import Executor, WorkflowBuilder, WorkflowContext, WorkflowViz, handler
+from opentelemetry import trace
 
 from . import prompts
 from .agents import AgentPool
 from .context import moment_context, recap_context, viewer_context
 from .factcheck import CheckResult, check, check_names_kept
 from .models import LANGUAGES, Commentary, Coverage, Insight, PersonalizedLine, Recap, Step, ViewerProfile
+
+_tracer = trace.get_tracer("touchline.crew")
+
+
+def _fact_check(stage: str, texts: list[str], contexts: list[Any], squad: list[str], headlines: list[str]) -> CheckResult:
+    """The fact-checker, recorded as its own step in the trace (Application Insights shows what it blocked)."""
+    with _tracer.start_as_current_span(f"fact_checker {stage}") as span:
+        result = check(texts, contexts, squad, headlines=headlines)
+        span.set_attribute("touchline.fact_check.passed", result.ok)
+        if result.problems:
+            span.set_attribute("touchline.fact_check.problems", result.problems)
+        return result
 
 MAX_COMMENTARY_ATTEMPTS = 3
 MAX_PRODUCER_ATTEMPTS = 2
@@ -130,7 +143,7 @@ class FactCheckExecutor(Executor):
     @handler
     async def verify(self, draft: Draft, ctx: WorkflowContext[DraftTask | ProduceTask]) -> None:
         task = draft.task
-        result = check([draft.commentary.line], [task.req.context], task.req.squad_names, headlines=[draft.commentary.caption])
+        result = _fact_check("commentary", [draft.commentary.line], [task.req.context], task.req.squad_names, [draft.commentary.caption])
         if result.ok:
             task.trace.append(Step("fact_checker", 0, "passed"))
             await ctx.send_message(ProduceTask(task.req, task.insight, draft.commentary, "ai", task.trace))
@@ -172,7 +185,7 @@ class ProducerExecutor(Executor):
                 trace.append(Step("producer", 0, f"failed: {type(e).__name__}; neutral line used"))
                 return neutral
             trace.append(Step("producer", ms, f"{profile.persona}/{profile.language}" + (" rewrite" if attempt > 1 else "")))
-            result = check([line.line], [job.req.context, extra], job.req.squad_names, headlines=[line.caption])
+            result = _fact_check("producer", [line.line], [job.req.context, extra], job.req.squad_names, [line.caption])
             if profile.language != "en":
                 kept = check_names_kept([line.caption, line.line], job.commentary.caption + " " + job.commentary.line,
                                         job.req.squad_names)
@@ -252,7 +265,7 @@ class RecapCheckExecutor(Executor):
             await ctx.yield_output({"recap": None, "trace": [vars(s) for s in task.trace]})
             return
         texts = [*recap.summary, recap.player_of_the_match, recap.player_reason, *(n.value for n in recap.key_numbers)]
-        result = check(texts, [task.context], task.squad_names, headlines=[recap.headline])
+        result = _fact_check("recap", texts, [task.context], task.squad_names, [recap.headline])
         if result.ok or task.attempt >= MAX_RECAP_ATTEMPTS:
             task.trace.append(Step("recap_fact_checker", 0, "passed" if result.ok else "gave up: " + "; ".join(result.problems)))
             await ctx.yield_output({"recap": recap.model_dump() if result.ok else None,

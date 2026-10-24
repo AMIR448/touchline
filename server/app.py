@@ -40,7 +40,7 @@ from simulator.clubs import CLUBS
 from simulator.engine import simulate
 from simulator.scenarios import SCENARIOS
 
-from . import mcp_server
+from . import mcp_server, telemetry
 from .playback import Playback
 
 STATIC = Path(__file__).parent / "static"
@@ -190,6 +190,7 @@ async def lifespan(_app: FastAPI):
         await INGEST.close()
 
 
+telemetry.setup()  # before the app exists, so its requests are traced too
 app = FastAPI(title="Touchline", version="0.1.0", lifespan=lifespan)
 mcp = mcp_server.build(MATCHES)
 mcp_app = mcp.streamable_http_app(streamable_http_path="/", stateless_http=True, json_response=True,

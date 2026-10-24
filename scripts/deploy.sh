@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Deploy Touchline to Azure: Event Hubs (ingest), Container Registry, App Service (the app).
+# Deploy Touchline to Azure: Event Hubs (ingest), Container Registry, App Service (the app),
+# Application Insights (traces of every agent run).
 # Re-runnable: existing resources are left alone, and the app gets a new image each run.
 #
 #   source scripts/env.sh && scripts/deploy.sh
@@ -17,6 +18,8 @@ EH_NS=${EH_NS:-touchline-eh-$SUFFIX}
 EH=${EH:-match-events}
 PLAN=${PLAN:-touchline-plan}
 APP=${APP:-touchline-$SUFFIX}                    # https://$APP.azurewebsites.net
+LOGS=${LOGS:-touchline-logs-$SUFFIX}
+INSIGHTS=${INSIGHTS:-touchline-insights-$SUFFIX}
 TAG=${TAG:-$(git rev-parse --short HEAD)$(git diff --quiet || echo -dirty)}
 
 : "${FOUNDRY_PROJECT_ENDPOINT:?set it (source scripts/env.sh)}"
@@ -46,6 +49,19 @@ exists az eventhubs eventhub show -n "$EH" --namespace-name "$EH_NS" -g "$RG" ||
   az eventhubs eventhub create -n "$EH" --namespace-name "$EH_NS" -g "$RG" --partition-count 2 \
     --cleanup-policy Delete --retention-time-in-hours 24 --only-show-errors -o none
 
+step "Application Insights $INSIGHTS (traces of every agent, step and fact-check)"
+az extension add -n application-insights --only-show-errors -o none 2>/dev/null || true
+exists az monitor log-analytics workspace show -n "$LOGS" -g "$RG" ||
+  az monitor log-analytics workspace create -n "$LOGS" -g "$RG" -l "$LOC" --retention-time 30 --quota 0.5 \
+    --only-show-errors -o none  # 0.5 GB/day cap: a demo can never run up a bill here
+exists az monitor app-insights component show --app "$INSIGHTS" -g "$RG" ||
+  az monitor app-insights component create --app "$INSIGHTS" -g "$RG" -l "$LOC" --kind web --application-type web \
+    --workspace "$(az monitor log-analytics workspace show -n "$LOGS" -g "$RG" --query id -o tsv)" --only-show-errors -o none
+INSIGHTS_ID=$(az monitor app-insights component show --app "$INSIGHTS" -g "$RG" --query id -o tsv)
+# keyless here too: only Entra-signed telemetry is accepted, so the connection string alone can't write
+az resource update --ids "$INSIGHTS_ID" --set properties.DisableLocalAuth=true --only-show-errors -o none
+INSIGHTS_CONN=$(az monitor app-insights component show --app "$INSIGHTS" -g "$RG" --query connectionString -o tsv)
+
 step "App Service plan $PLAN and web app $APP"
 # App Service (Linux, B1): containers, WebSockets, managed identity, always on. One instance on
 # purpose: matches, AI results and viewers' playback live in this process's memory.
@@ -55,7 +71,7 @@ exists az webapp show -n "$APP" -g "$RG" ||
   az webapp create -n "$APP" -g "$RG" -p "$PLAN" --container-image-name "$IMAGE:$TAG" \
     --assign-identity '[system]' --only-show-errors -o none
 
-step "Roles for the app's managed identity (keyless: registry, models, speech, Event Hubs)"
+step "Roles for the app's managed identity (keyless: registry, models, speech, Event Hubs, telemetry)"
 PRINCIPAL=$(az webapp show -n "$APP" -g "$RG" --query identity.principalId -o tsv)
 ACR_ID=$(az acr show -n "$ACR" -g "$RG" --query id -o tsv)
 AI_ID=$(az cognitiveservices account show -n "$AI" -g "$RG" --query id -o tsv)
@@ -70,6 +86,7 @@ grant "Cognitive Services Speech User" "$AI_ID"
 grant "Foundry User" "$AI_ID" || grant "Azure AI User" "$AI_ID"
 grant "Azure Event Hubs Data Sender" "$EH_ID"
 grant "Azure Event Hubs Data Receiver" "$EH_ID"
+grant "Monitoring Metrics Publisher" "$INSIGHTS_ID"
 
 step "Configure and roll out touchline:$TAG"
 az webapp config set -n "$APP" -g "$RG" --generic-configurations '{"acrUseManagedIdentityCreds": true}' \
@@ -82,7 +99,8 @@ az webapp config appsettings set -n "$APP" -g "$RG" --only-show-errors -o none -
   "MODEL_REASONING=${MODEL_REASONING:-gpt-5-mini}" TOUCHLINE_AUTH=managed \
   "EVENTHUB_NAMESPACE=$EH_NS.servicebus.windows.net" "EVENTHUB_NAME=$EH" \
   WEBSITES_ENABLE_APP_SERVICE_STORAGE=true TOUCHLINE_CACHE_FILE=/home/data/ai-cache.json \
-  TOUCHLINE_VOICE_DIR=/home/data/voice TOUCHLINE_WARM=on "TOUCHLINE_DAILY_AI_RUNS=${TOUCHLINE_DAILY_AI_RUNS:-1500}"
+  TOUCHLINE_VOICE_DIR=/home/data/voice TOUCHLINE_WARM=on "TOUCHLINE_DAILY_AI_RUNS=${TOUCHLINE_DAILY_AI_RUNS:-1500}" \
+  "APPLICATIONINSIGHTS_CONNECTION_STRING=$INSIGHTS_CONN"
 az webapp config container set -n "$APP" -g "$RG" --container-image-name "$IMAGE:$TAG" --only-show-errors -o none
 az webapp restart -n "$APP" -g "$RG" -o none
 

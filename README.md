@@ -55,7 +55,13 @@ flowchart LR
   PB -->|"commentary audio"| SP
   PB & GD & QA --> UI["Web app<br/>Studio · Fan"]
   MCP -.-> EXT["Any MCP client<br/>Copilot, Claude, agents"]
+  CREW & QA -.->|"OpenTelemetry traces"| AI[("Application Insights<br/>every agent, step,<br/>model call, fact-check")]
 ```
+
+Every agent run is traced to **Azure Application Insights** through Agent Framework's built-in OpenTelemetry:
+one trace per moment shows the workflow, each agent (`invoke_agent Commentator`, `invoke_agent Producer`), each
+model call with its tokens, and each fact-checker verdict (`fact_checker commentary`, with what it blocked).
+Keyless like the rest: the resource refuses connection-string writes, the app's managed identity publishes.
 
 ## Build steps
 

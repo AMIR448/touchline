@@ -49,6 +49,16 @@ def test_factcheck_checks_scorelines_as_a_pair():
     assert check(["Kestrel's 4-3-3 against Marlowe's 4-2-3-1"], [{"shape": "4-3-3 v 4-2-3-1"}]).ok
 
 
+def test_factcheck_rejects_invented_names():
+    ctx = {"scorer": "Theo Marchetti", "team": "Port Ellis Rovers"}
+    result = check(["Theo Makuke puts Port Ellis Rovers ahead."], [ctx], squad_names=["Theo Marchetti"])
+    assert not result.ok and "Theo Makuke" in result.problems[0]
+    assert check(["Despite the pressure, Theo Marchetti puts Port Ellis Rovers ahead."], [ctx]).ok
+    assert check(["Aunque Port Ellis sufre, marca Theo Marchetti."], [ctx]).ok  # sentence-initial words aren't names
+    # headlines capitalise ordinary words: only sentences get the invented-name check
+    assert check(["Marchetti scores."], [ctx], headlines=["Marchetti Levels with Clinical Finish"]).ok
+
+
 def test_factcheck_percentages_from_probabilities():
     assert 19 in allowed_numbers({"shot_xg": 0.19})
     assert check(["a 19% chance"], [{"shot_xg": 0.19}]).ok

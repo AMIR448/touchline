@@ -16,6 +16,8 @@ NUMBER = re.compile(r"(?<![\w.])(\d+(?:[.,]\d+)?)")
 NON_LATIN = re.compile(r"[\u0370-\u03FF\u0400-\u052F\u0590-\u05FF\u0600-\u06FF\u0E00-\u0E7F\u3040-\u30FF\u4E00-\u9FFF]")
 ALWAYS_ALLOWED = {45.0, 90.0}  # "first 45 minutes", "the 90 minutes"
 # A scoreline ("2-1", "2–1"), but not part of a formation like 4-3-3 or 4-2-3-1.
+# Two capitalised words in a row: how a person's name looks ("Theo Makuke"). Overlapping, so every pair is seen.
+NAME_PAIR = re.compile(r"(?=(?<![\w'’-])([A-ZÀ-Þ][a-zß-ÿ'’-]+)\s+([A-ZÀ-Þ][a-zß-ÿ'’-]+))")
 SCORELINE = re.compile(r"(?<![\d\-–])(\d{1,2})\s?[-–]\s?(\d{1,2})(?![\d\-–])")
 
 
@@ -64,30 +66,72 @@ def _supported(token: str, allowed: set[float]) -> bool:
     return any(round(a, decimals) == value for a in allowed)
 
 
+def _scorelines_in(text: str):
+    """(match, a, b) for each scoreline; a "50-50 ball" is not a score."""
+    for m in SCORELINE.finditer(text):
+        a, b = m.groups()
+        if int(a) <= 15 and int(b) <= 15:
+            yield m, a, b
+
+
+def _without_scores(text: str) -> str:
+    """The text with its scorelines blanked out, same length so character offsets still line up."""
+    for m, _, _ in _scorelines_in(text):
+        text = text[:m.start()] + " " * (m.end() - m.start()) + text[m.end():]
+    return text
+
+
 def scorelines(text: str) -> set[tuple[int, int]]:
     """Scorelines in either order: "2-1 up" and "1-2 down" are the same score."""
-    return {tuple(sorted((int(a), int(b)))) for a, b in SCORELINE.findall(text)}
+    return {tuple(sorted((int(a), int(b)))) for _, a, b in _scorelines_in(text)}
 
 
-def check(texts: list[str], contexts: list[Any], squad_names: Iterable[str] = ()) -> CheckResult:
+def _title_case(text: str) -> bool:
+    """Headlines ("Kestrel City Controls Play") capitalise most words, so name-shaped pairs mean nothing there."""
+    words = [w for w in re.findall(r"[^\W\d_]+", text) if len(w) >= 4]  # short words ("e", "de", "to") stay lower case
+    return len(words) >= 2 and all(w[0].isupper() for w in words)
+
+
+def invented_names(text: str, context_text: str) -> list[tuple[int, int, str]]:
+    """Name-shaped word pairs that aren't in the facts: catches a player the writer made up, not just a wrong one.
+    A capitalised first word that only starts the sentence ("Despite Marlowe ...") is not part of a name."""
+    if _title_case(text):
+        return []
+    known = context_text.lower()
+    out = []
+    for m in NAME_PAIR.finditer(text):
+        first, second = (re.sub(r"['’]s?$", "", w) for w in m.groups())
+        start = m.start() == 0 or re.search(r"[.!?:;¡¿«\"“(]\s*$", text[:m.start()])
+        if second.lower() not in known or (first.lower() not in known and not start):
+            out.append((m.start(), m.start() + len(m.group(1)) + 1 + len(m.group(2)), f"{m.group(1)} {m.group(2)}"))
+    return out
+
+
+def check(texts: list[str], contexts: list[Any], squad_names: Iterable[str] = (),
+          headlines: Iterable[str] = ()) -> CheckResult:
+    """`texts` are sentences; `headlines` get every check except invented names, since a headline
+    capitalises words that are not names ("Ferraro Levels with Clinical Penalty")."""
+    headlines = list(headlines)
     allowed = allowed_numbers(*contexts)
     context_text = json.dumps(contexts, ensure_ascii=False)
     real_scores = scorelines(context_text) | {(0, 0)}  # "from 0-0" is always true
     problems = []
-    for text in texts:
+    for text in [*headlines, *texts]:
         # each number of a wrong scoreline may exist elsewhere in the facts ("3 shots"), so check the pair
-        for a, b in SCORELINE.findall(text):
+        for _, a, b in _scorelines_in(text):
             if tuple(sorted((int(a), int(b)))) not in real_scores:
                 problems.append(f"the score {a}-{b} is not a score from this match")
         stray = NON_LATIN.findall(text)
         if stray:  # models occasionally leak letters from another alphabet ("Kestrел")
             problems.append(f"the text contains non-Latin characters ({''.join(sorted(set(stray)))[:10]}); use the target language's normal alphabet")
-        for token in NUMBER.findall(SCORELINE.sub(" ", text)):  # scorelines were checked as pairs above
+        for token in NUMBER.findall(_without_scores(text)):  # scorelines were checked as pairs above
             if not _supported(token, allowed):
                 problems.append(f"the number {token} is not in the facts")
         for name in squad_names:
             if name in text and name not in context_text:
                 problems.append(f"{name} is not part of this moment's facts")
+        for _, _, name in ([] if text in headlines else invented_names(text, context_text)):
+            problems.append(f"{name} is not a name in the facts")
     return CheckResult(ok=not problems, problems=sorted(set(problems)))
 
 
@@ -106,13 +150,13 @@ def marks(text: str, contexts: list[Any], squad_names: Iterable[str] = ()) -> li
     context_text = json.dumps(contexts, ensure_ascii=False)
     real_scores = scorelines(context_text) | {(0, 0)}
     out = []
-    for m in SCORELINE.finditer(text):
-        a, b = m.groups()
+    for m, a, b in _scorelines_in(text):
         out.append({"start": m.start(), "end": m.end(), "kind": "score", "ok": tuple(sorted((int(a), int(b)))) in real_scores})
-    blanked = SCORELINE.sub(lambda m: " " * len(m.group()), text)  # same offsets, scorelines removed
-    for m in NUMBER.finditer(blanked):
+    for m in NUMBER.finditer(_without_scores(text)):
         out.append({"start": m.start(), "end": m.end(), "kind": "number", "ok": _supported(m.group(1), allowed)})
     for name in squad_names:
         for m in re.finditer(re.escape(name), text):
             out.append({"start": m.start(), "end": m.end(), "kind": "name", "ok": name in context_text})
+    for start, end, _ in invented_names(text, context_text):
+        out.append({"start": start, "end": end, "kind": "name", "ok": False})
     return sorted(out, key=lambda x: x["start"])

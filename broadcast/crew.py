@@ -130,7 +130,7 @@ class FactCheckExecutor(Executor):
     @handler
     async def verify(self, draft: Draft, ctx: WorkflowContext[DraftTask | ProduceTask]) -> None:
         task = draft.task
-        result = check([draft.commentary.caption, draft.commentary.line], [task.req.context], task.req.squad_names)
+        result = check([draft.commentary.line], [task.req.context], task.req.squad_names, headlines=[draft.commentary.caption])
         if result.ok:
             task.trace.append(Step("fact_checker", 0, "passed"))
             await ctx.send_message(ProduceTask(task.req, task.insight, draft.commentary, "ai", task.trace))
@@ -172,7 +172,7 @@ class ProducerExecutor(Executor):
                 trace.append(Step("producer", 0, f"failed: {type(e).__name__}; neutral line used"))
                 return neutral
             trace.append(Step("producer", ms, f"{profile.persona}/{profile.language}" + (" rewrite" if attempt > 1 else "")))
-            result = check([line.caption, line.line], [job.req.context, extra], job.req.squad_names)
+            result = check([line.line], [job.req.context, extra], job.req.squad_names, headlines=[line.caption])
             if profile.language != "en":
                 kept = check_names_kept([line.caption, line.line], job.commentary.caption + " " + job.commentary.line,
                                         job.req.squad_names)
@@ -251,9 +251,8 @@ class RecapCheckExecutor(Executor):
         if recap is None:
             await ctx.yield_output({"recap": None, "trace": [vars(s) for s in task.trace]})
             return
-        texts = [recap.headline, *recap.summary, recap.player_of_the_match, recap.player_reason,
-                 *(n.value for n in recap.key_numbers)]
-        result = check(texts, [task.context], task.squad_names)
+        texts = [*recap.summary, recap.player_of_the_match, recap.player_reason, *(n.value for n in recap.key_numbers)]
+        result = check(texts, [task.context], task.squad_names, headlines=[recap.headline])
         if result.ok or task.attempt >= MAX_RECAP_ATTEMPTS:
             task.trace.append(Step("recap_fact_checker", 0, "passed" if result.ok else "gave up: " + "; ".join(result.problems)))
             await ctx.yield_output({"recap": recap.model_dump() if result.ok else None,

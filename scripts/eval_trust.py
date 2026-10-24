@@ -76,7 +76,7 @@ async def run(n_matches: int, seed: int, concurrency: int) -> dict:
         for c in out:
             if c.source == "ai":
                 facts = [moment_context(moment, snap, players), viewer_context(by_key[c.profile_key], snap, players)]
-                audit.append(check([c.caption, c.line], facts, squad).ok)
+                audit.append(check([c.line], facts, squad, headlines=[c.caption]).ok)
         coverages.append({"wall_ms": wall, "results": [c.to_dict() for c in out], "audit": audit})
 
     async def recap(snap, players, profile):

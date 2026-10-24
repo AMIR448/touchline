@@ -528,7 +528,7 @@ function Transport({ s, send, colors }) {
   };
   return html`<div class="transport">
     <button class="play" onClick=${() => send({ cmd: s.status.playing ? "pause" : "play" })} aria-label="play/pause">${s.status.playing ? "❚❚" : "▶"}</button>
-    <div class="speeds">${[1, 10, 30, 60, 120].map(x => html`<button class=${s.status.speed === x ? "on" : ""} onClick=${() => send({ cmd: "speed", value: x })}>${x}×</button>`)}</div>
+    <div class="speeds">${[1, 2, 5, 10, 30, 60, 120].map(x => html`<button class=${s.status.speed === x ? "on" : ""} onClick=${() => send({ cmd: "speed", value: x })}>${x}×</button>`)}</div>
     <div class="scrub" ref=${ref} onClick=${seek} title="Momentum: who's on top, minute by minute. Click to jump.">
       <${Wave} s=${s} colors=${colors} max=${max} />
       <div class="track"></div><div class="fill" style=${{ width: `${(pos / max) * 100}%` }}></div>

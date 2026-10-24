@@ -613,12 +613,12 @@ function MomentCard({ m, send, onCompare, onProof, yourTeam, waiting, speaking }
       <span class="spacer"></span>${speaking === m.id && html`<${Eq} />`}<${ProofChip} ai=${ai} onProof=${a => onProof(a, m)} /></div>
     <div class="cap">${ai ? ai.caption : m.title}</div>
     ${ai ? html`<p>${ai.line}</p>`
-      : waiting && m.past ? html`<p class="muted quiet"><a href="#" onClick=${replay}>Replay ↺</a></p>`
+      : waiting && m.past ? html`<p class="muted quiet"><a href="#" onClick=${replay} title="Jump the match back to this moment">↺ Rewind to here</a></p>`
       : waiting ? html`<p class="muted writing">The crew is writing this<span class="dots"><i></i><i></i><i></i></span></p>` : null}
     ${ai && html`<div class="acts">
       ${ai.insight && ai.insight.why_it_matters && html`<button class="btn sm ghost" onClick=${() => setOpen(!open)}>${open ? "Hide" : "Why?"}</button>`}
       ${onCompare && html`<button class="btn sm ghost" onClick=${() => onCompare(m)}>Other fans' view ↔</button>`}
-      <button class="btn sm ghost" onClick=${replay}>Replay ↺</button>
+      <button class="btn sm ghost" onClick=${replay} title="Jump the match back to this moment">↺ Rewind to here</button>
     </div>`}
     ${open && html`<div class="whytext">🧠 ${ai.insight.why_it_matters}</div>`}
   </div>`;
@@ -956,37 +956,7 @@ function Modal({ onClose, wide, children }) {
     <button class="btn sm x" onClick=${onClose}>Close ✕</button>${children}</div></div>`;
 }
 
-// Try to fool the fact-checker: edit the line, and the same code that checks every AI line checks yours, live.
-function FoolBox({ matchId, moment, ai }) {
-  const [text, setText] = useState(ai.line), [res, setRes] = useState(null);
-  useEffect(() => {
-    const sent = text, t = setTimeout(() => post(`/api/matches/${matchId}/factcheck`, { moment_id: moment.id, text: sent, profile: ai.profile_key || "analyst|en|-|-" })
-      .then(r => setRes({ ...r, text: sent })).catch(() => setRes(null)), 250);
-    return () => clearTimeout(t);
-  }, [text]);
-  const marked = () => {
-    const out = [];
-    let i = 0;
-    for (const m of res.marks) {
-      if (m.start < i) continue;
-      out.push(res.text.slice(i, m.start));
-      out.push(html`<mark class=${m.ok ? "ok" : "bad"} title=${m.ok ? "In the facts" : "Not in the facts"}>${res.text.slice(m.start, m.end)}</mark>`);
-      i = m.end;
-    }
-    out.push(res.text.slice(i));
-    return out;
-  };
-  return html`<div class="fool">
-    <h3>🧪 Try to fool the fact-checker</h3>
-    <p class="muted">Change the score, a number or a player's name. The code that checks every AI line before it goes on air checks yours, as you type.</p>
-    <textarea rows="3" maxlength="600" value=${text} onInput=${e => setText(e.target.value)}></textarea>
-    ${res && html`<div class="marked">${marked()}</div>
-      <div class=${"verdict " + (res.ok ? "ok" : "bad")}>${res.ok ? "✅ Passes: every number and name is in the facts, so this could go on air."
-        : html`<b>⛔ Blocked.</b> Sent back to the writer: ${res.problems.join("; ")}.`}</div>`}
-  </div>`;
-}
-
-function ProofModal({ ai, moment, matchId, onClose }) {
+function ProofModal({ ai, moment, onClose }) {
   const total = ai.trace.reduce((a, x) => a + x.ms, 0);
   const caught = caughtIn(ai.trace);
   return html`<${Modal} onClose=${onClose}>
@@ -1003,7 +973,6 @@ function ProofModal({ ai, moment, matchId, onClose }) {
     <${TraceSteps} trace=${ai.trace} />
     <p class="muted" style="font-size:12px;margin-top:14px">The fact-checker is plain code: any number, score or player name that isn't in the
       stats engine's facts sends the draft back for a rewrite.</p>
-    ${matchId && moment.type !== "qa" && moment.id && html`<${FoolBox} matchId=${matchId} moment=${moment} ai=${ai} key=${moment.id} />`}
   <//>`;
 }
 
@@ -1082,7 +1051,7 @@ function App() {
     ${screen === "watch" && html`<${Watch} s=${s} send=${send} ask=${ask} closeCard=${closeCard} matchId=${matchId} summary=${summary} profile=${profile} setProfile=${setProfile}
       colors=${colors} voice=${voice} voiceOn=${voiceOn} setVoiceOn=${setVoiceOn} speaking=${speaking} onBack=${() => setScreen("start")}
       onCompare=${setCompare} onProof=${onProof} />`}
-    ${proof && html`<${ProofModal} ai=${proof.ai} moment=${proof.moment} matchId=${matchId} onClose=${() => setProof(null)} />`}
+    ${proof && html`<${ProofModal} ai=${proof.ai} moment=${proof.moment} onClose=${() => setProof(null)} />`}
     ${compare && html`<${CompareModal} matchId=${matchId} moment=${compare} meta=${s.meta} onClose=${() => setCompare(null)} />`}
     ${gen && html`<${GenerateModal} clubs=${clubs} scenarios=${scenarios} onClose=${() => setGen(false)}
       onCreated=${id => { setGen(false); loadMatches(id); }} />`}

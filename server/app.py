@@ -11,7 +11,6 @@ REST:
     GET  /api/matches/{id}/snapshot        final stats of a match
     GET  /api/matches/{id}/cues            timed overlay cues for a graphics renderer
     POST /api/matches/{id}/compare         one moment, tailored for several viewers {moment_id, profiles}
-    POST /api/matches/{id}/factcheck       run the fact-checker (code, no AI) on any text for one moment
 WebSocket:
     /ws/matches/{id}?speed=10              live playback; protocol in docs/STREAMING.md
 """
@@ -30,12 +29,10 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from mcp.server.transport_security import TransportSecuritySettings
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from analytics.analyzer import MatchAnalyzer
 from analytics.graphics import all_cues
-from broadcast.context import moment_context, viewer_context
-from broadcast.factcheck import check, marks
 from broadcast.limits import DailyBudget, RateLimiter
 from broadcast.models import ViewerProfile
 from broadcast.service import BroadcastService
@@ -104,12 +101,6 @@ def _voice_service(broadcast: BroadcastService | None):
 class CompareRequest(BaseModel):
     moment_id: str
     profiles: list[ViewerProfile] | None = None
-
-
-class FactCheckRequest(BaseModel):
-    moment_id: str
-    text: str = Field(max_length=600)
-    profile: str = "analyst|en|-|-"
 
 
 class NewMatch(BaseModel):
@@ -293,25 +284,6 @@ async def compare(match_id: str, req: CompareRequest) -> dict:
                     ViewerProfile(persona="casual", language="fr", favorite_team=other)]
     coverages = await app.state.broadcast.cover_many(_feed_id(match_id), moment, snap, players, profiles[:4])
     return {"moment": moment, "profiles": [p.model_dump() for p in profiles[:4]], "coverage": coverages}
-
-
-@app.post("/api/matches/{match_id}/factcheck")
-async def factcheck(match_id: str, req: FactCheckRequest) -> dict:
-    """The crew's fact-checker on any text, against the facts of one moment: try to make it accept a wrong fact.
-    It is the same plain code that checks every AI line before it goes on air, so no AI is called here."""
-    if match_id not in MATCHES:
-        raise HTTPException(404, "no such match")
-    moment, snap, players = _state_at_moment(MATCHES[match_id], req.moment_id)
-    persona, language, team, player = (req.profile.split("|") + ["-"] * 4)[:4]
-    try:
-        profile = ViewerProfile(persona=persona, language=language, favorite_team=None if team == "-" else team,
-                                favorite_player=None if player == "-" else player)
-    except ValueError:
-        profile = ViewerProfile(persona="analyst", language="en")
-    contexts = [moment_context(moment, snap, players), viewer_context(profile, snap, players)]
-    squad = [p["name"] for p in players.values()]
-    result = check([req.text], contexts, squad)
-    return {"ok": result.ok, "problems": result.problems, "marks": marks(req.text, contexts, squad)}
 
 
 @app.get("/api/matches/{match_id}/voice/{moment_id}")

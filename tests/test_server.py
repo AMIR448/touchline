@@ -270,13 +270,3 @@ def test_seek_keeps_written_commentary_and_player_cards(client):
         msg = recv(ws, "player")
         assert msg["player"]["id"] == pid and "goals" in msg["player"]
 
-
-def test_factcheck_endpoint_blocks_a_wrong_score(client):
-    match_id = client.get("/api/matches").json()[0]["match_id"]
-    snap = client.get(f"/api/matches/{match_id}/snapshot").json()
-    goal = next(m for m in snap["moments"] if m["type"] == "goal")
-    score = next(t for t in goal["facts"]["score_after"].split() if "-" in t)  # "Kestrel City 0-1 Marlowe United"
-    ok = client.post(f"/api/matches/{match_id}/factcheck", json={"moment_id": goal["id"], "text": f"It's {score} now."}).json()
-    assert ok["ok"] and ok["marks"][0]["kind"] == "score" and ok["marks"][0]["ok"]
-    bad = client.post(f"/api/matches/{match_id}/factcheck", json={"moment_id": goal["id"], "text": "It's 7-3 now."}).json()
-    assert not bad["ok"] and "7-3" in bad["problems"][0] and not bad["marks"][0]["ok"]

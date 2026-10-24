@@ -142,21 +142,3 @@ def check_names_kept(texts: list[str], source_text: str, squad_names: Iterable[s
     return CheckResult(ok=not missing, problems=[f"keep the player name '{n}' exactly as written, in Latin letters"
                                                  for n in missing])
 
-
-def marks(text: str, contexts: list[Any], squad_names: Iterable[str] = ()) -> list[dict]:
-    """Every fact in `text` and whether the facts back it up, as character spans for the UI to highlight.
-    Same rules as check(); used by the "try to fool the fact-checker" box."""
-    allowed = allowed_numbers(*contexts)
-    context_text = json.dumps(contexts, ensure_ascii=False)
-    real_scores = scorelines(context_text) | {(0, 0)}
-    out = []
-    for m, a, b in _scorelines_in(text):
-        out.append({"start": m.start(), "end": m.end(), "kind": "score", "ok": tuple(sorted((int(a), int(b)))) in real_scores})
-    for m in NUMBER.finditer(_without_scores(text)):
-        out.append({"start": m.start(), "end": m.end(), "kind": "number", "ok": _supported(m.group(1), allowed)})
-    for name in squad_names:
-        for m in re.finditer(re.escape(name), text):
-            out.append({"start": m.start(), "end": m.end(), "kind": "name", "ok": name in context_text})
-    for start, end, _ in invented_names(text, context_text):
-        out.append({"start": start, "end": end, "kind": "name", "ok": False})
-    return sorted(out, key=lambda x: x["start"])

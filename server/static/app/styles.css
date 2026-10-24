@@ -468,3 +468,9 @@ canvas.clickable { cursor: pointer; }
 .fool .verdict { margin-top: 10px; padding: 9px 12px; border-radius: 8px; font-size: 14px; }
 .fool .verdict.ok { background: rgba(0, 229, 160, .1); color: var(--ai); }
 .fool .verdict.bad { background: rgba(255, 90, 95, .12); color: #ffb3b5; }
+
+/* ---------- instant replay ---------- */
+.replaytag { position: absolute; top: 16%; left: 2.4%; display: flex; gap: .4em; align-items: center; padding: .25em .8em .2em;
+  font: 800 clamp(16px, 2vw, 26px)/1 var(--display); letter-spacing: .16em; color: #fff; background: rgba(7, 11, 20, .85);
+  border-left: 4px solid var(--gold); border-radius: 6px; animation: slidein .3s ease; pointer-events: none; }
+.replaytag span { color: var(--gold); }

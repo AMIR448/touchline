@@ -55,7 +55,7 @@ function teamColors(meta) {
 
 const startLineups = meta => (meta ? { [meta.home.id]: meta.home.starters.map(p => p.id), [meta.away.id]: meta.away.starters.map(p => p.id) } : {});
 const initial = () => ({ meta: null, durationMin: 95, status: { playing: false, speed: 10, clock: "00:00" }, clock: "00:00", period: 1,
-  trail: [], last: null, lineups: {}, snapshot: null, moments: [], cues: [], badges: [], banner: null, lower: null, recap: null, lastAI: null,
+  trail: [], history: [], last: null, lineups: {}, snapshot: null, moments: [], cues: [], badges: [], banner: null, lower: null, recap: null, lastAI: null,
   qa: [], card: null });
 
 function applyLineup(lineups, ev) {
@@ -82,7 +82,8 @@ function reduce(s, msg, key) {
       const lineups = applyLineup(s.lineups, ev);
       if (!ev.display) return { ...s, lineups, clock: ev.clock, period: ev.period };
       const step = { ...ev.display, team: ev.team_id, player: ev.player_id, type: ev.type };
-      return { ...s, lineups, trail: [...s.trail.slice(-5), step], last: step, clock: ev.clock, period: ev.period };
+      return { ...s, lineups, trail: [...s.trail.slice(-5), step], history: [...s.history.slice(-80), { ...step, ts: ev.ts_ms }], last: step,
+        clock: ev.clock, period: ev.period };
     }
     case "cue": {
       const c = msg.cue, cues = [c, ...s.cues].slice(0, 150);
@@ -110,7 +111,7 @@ function reduce(s, msg, key) {
     case "reset": {
       const d = msg.event.display;
       const last = d ? { ...d, team: msg.event.team_id, player: msg.event.player_id, type: msg.event.type } : null;
-      return { ...s, period: msg.event.period || s.period, trail: last ? [last] : [], last, lineups: msg.lineups || s.lineups, badges: [], banner: null, lower: null, cues: [],
+      return { ...s, period: msg.event.period || s.period, trail: last ? [last] : [], history: [], last, lineups: msg.lineups || s.lineups, badges: [], banner: null, lower: null, cues: [],
         recap: null, snapshot: msg.state, moments: [...msg.state.moments].reverse().map((m, i) => ({ ...m, past: true, at: -i })), clock: msg.event.clock };
     }
     case "recap":
@@ -404,14 +405,14 @@ const loadStadium = () => (stadiumLib ||= import("./stadium3d.js"));
 const CAMS = [["auto", "🎬 Auto", "Director: TV camera, cuts behind the goal for big moments"], ["tv", "📺 TV", "Main broadcast camera"],
   ["goal", "🥅 Goal", "Behind the goal"], ["follow", "🎯 Ball", "Follow the ball"], ["top", "🗺️ Tactical", "The whole pitch from above"]];
 
-function Pitch3D({ s, colors, onPlayer, camera, onFail }) {
+function Pitch3D({ s, colors, onPlayer, camera, onFail, onReplay }) {
   const canvas = useRef(null), live = useRef({});
   const people = useMemo(() => playerById(s.meta), [s.meta]);
   const targets = useMemo(() => shapeTargets(s.meta, s.lineups, s.last), [s.meta, s.lineups, s.last]);
-  live.current = { s, colors, people, targets, camera, onPlayer };
+  live.current = { s, colors, people, targets, camera, onPlayer, onReplay };
   useEffect(() => {
     let stadium = null, gone = false;
-    loadStadium().then(m => { if (!gone) stadium = m.createStadium(canvas.current, { live: () => live.current, drawLines }); })
+    loadStadium().then(m => { if (!gone) stadium = m.createStadium(canvas.current, { live: () => live.current, drawLines, shapeTargets }); })
       .catch(e => { console.error("3D view unavailable", e); onFail(); });  // no WebGL: back to 2D
     return () => { gone = true; stadium && stadium.dispose(); };
   }, []);
@@ -468,9 +469,9 @@ function Broadcast({ s, colors, showLower = true, onProof, speaking, onPlayer })
   const badges = s.badges.filter(b => b.until > now);
   const banner = s.banner && s.banner.until > now ? s.banner : null;
   const lower = showLower && s.lower && s.lower.until > now ? s.lower : null; // off air after ~10s, like TV
-  const [view, setView] = usePref("view", "2d"), [cam, setCam] = usePref("cam", "auto");
+  const [view, setView] = usePref("view", "2d"), [cam, setCam] = usePref("cam", "auto"), [replaying, setReplaying] = useState(false);
   return html`<div class="pitchwrap"><div class=${"frame" + (view === "3d" ? " v3d" : "")}>
-    ${view === "3d" ? html`<${Pitch3D} s=${s} colors=${colors} onPlayer=${onPlayer} camera=${cam} onFail=${() => setView("2d")} />`
+    ${view === "3d" ? html`<${Pitch3D} s=${s} colors=${colors} onPlayer=${onPlayer} camera=${cam} onFail=${() => setView("2d")} onReplay=${setReplaying} />`
                     : html`<${Pitch} s=${s} colors=${colors} onPlayer=${onPlayer} />`}
     ${meta && html`<div class="scorebug">
       <div class="team"><i style=${{ background: colors[meta.home.id] }}></i>${meta.home.short}</div>
@@ -478,6 +479,7 @@ function Broadcast({ s, colors, showLower = true, onProof, speaking, onPlayer })
       <div class="team away">${meta.away.short}<i style=${{ background: colors[meta.away.id] }}></i></div>
       <div class="clock">${s.clock}<small>${s.period === 1 ? "1H" : "2H"}</small></div>
     </div>`}
+    ${view === "3d" && replaying && html`<div class="replaytag"><span>⟲</span> REPLAY</div>`}
     <div class="rcol">
     <div class="viewbar">
       <div class="seg">${["2d", "3d"].map(v => html`<button class=${view === v ? "on" : ""} onClick=${() => setView(v)}

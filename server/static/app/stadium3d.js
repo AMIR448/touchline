@@ -109,7 +109,7 @@ function label(text, { bg = null, fg = "#ffffff", size = 1, font = "800 92px 'Ba
   return sprite;
 }
 
-export function createStadium(canvas, { live, drawLines }) {
+export function createStadium(canvas, { live, drawLines, shapeTargets }) {
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: "high-performance" });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
   renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -225,6 +225,9 @@ export function createStadium(canvas, { live, drawLines }) {
       }
       case "follow":
         return { pos: [bx - homeAttacks * 19, 12, bz * 0.8], look: [bx + homeAttacks * 10, 0, bz * 0.9], fov: 48 };
+      case "replay": {  // low, from the far touchline: the angle the live camera never shows
+        return { pos: [bx - homeAttacks * 12, 11, Math.min(bz - 30, -PW / 2 - 4)], look: [bx + homeAttacks * 4, 0.5, bz], fov: 34 };
+      }
       case "top":
         return { pos: [0, 88, 50], look: [0, 0, 1], fov: 45 };
       default:  // tv: the main broadcast camera high on the halfway line, panning with play
@@ -244,11 +247,31 @@ export function createStadium(canvas, { live, drawLines }) {
   };
   canvas.addEventListener("click", onClick);
 
+  // Instant replay (Auto only): a few seconds after a goal, the move that made it again, slowed down,
+  // from the far side and then from behind the goal. It replays the real events kept in s.history.
+  let replay = null, replayAt = null;
+  const startReplay = (s, moment) => {
+    const hist = s.history || [];
+    let idx = hist.length - 1;
+    while (idx >= 0 && hist[idx].type !== "shot") idx--;
+    if (idx < 0) return null;
+    const span = (Math.min((moment.facts && moment.facts.build_up && moment.facts.build_up.duration_s) || 10, 20) + 2) * 1000;
+    const steps = hist.slice(0, idx + 1).filter(st => st.ts >= hist[idx].ts - span).slice(-14);
+    if (steps.length < 2) return null;
+    const end = hist[idx].end || hist[idx].start;
+    const r = live().onReplay; r && r(true);
+    return { steps, i: 0, t: 0, side: end[0] > PL / 2 ? 1 : -1, shown: -1, targets: null, trail: [] };
+  };
+  const stepTime = (rp, i) => i === rp.steps.length - 1 ? 2.8
+    : Math.min(Math.max(((rp.steps[i + 1].ts - rp.steps[i].ts) / 1000) * 0.45, 0.55), 1.3);
+  const endReplay = () => { replay = null; cam.cut = null; const r = live().onReplay; r && r(false); };
+
   let raf, prev = performance.now(), clock = 0;
   const frame = now => {
     raf = requestAnimationFrame(frame);
     const dt = Math.min((now - prev) / 1000, 0.1); prev = now; clock += dt;
-    const { s, colors, people, targets, camera: wanted } = live();
+    const { s, colors, people, camera: wanted } = live();
+    let { targets } = live();
     const w = canvas.clientWidth, h = canvas.clientHeight;
     if (!w || !h) return;
     const size = renderer.getSize(new THREE.Vector2());
@@ -258,6 +281,26 @@ export function createStadium(canvas, { live, drawLines }) {
       const cc = [colors[s.meta.home.id], colors[s.meta.away.id]];
       if (!crowdColors || cc.join() !== crowdColors) { crowdColors = cc.join(); buildStands(cc.filter(Boolean)); }
     }
+
+    if (replayAt && now >= replayAt.at) {
+      replay = wanted === "auto" ? startReplay(s, replayAt.moment) : null;
+      replayAt = null;
+      if (replay) cam.cut = null;  // the live goal camera hands over to the replay
+    }
+    if (replay && wanted !== "auto") endReplay();
+    if (replay) {
+      replay.t += dt;
+      if (replay.t > stepTime(replay, replay.i)) { replay.t = 0; replay.i++; }
+      if (replay.i >= replay.steps.length) endReplay();
+    }
+    const cur = replay ? replay.steps[replay.i] : s.last;
+    if (replay && replay.shown !== replay.i) {
+      replay.shown = replay.i;
+      replay.targets = shapeTargets(s.meta, s.lineups, cur);
+      replay.trail = replay.steps.slice(Math.max(0, replay.i - 5), replay.i + 1);
+      if (replay.i >= replay.steps.length - 2) cam.cut = { side: replay.side, until: Infinity };  // the finish, from behind the goal
+    }
+    if (replay) targets = replay.targets;
 
     // players ease toward their targets, exactly like the 2D dots
     const k = ease(dt, 3.2);
@@ -282,17 +325,17 @@ export function createStadium(canvas, { live, drawLines }) {
     }
 
     // the ball flies from where it was to where the latest event put it
-    const last = s.last;
+    const last = cur;
     const bt = last ? (last.end || last.start) : [PL / 2, PW / 2];
     const key = bt.join(",") + (last ? last.type : "");
     if (key !== flight.key) {
       const from = flight.t >= 1 ? flight.to : [ball.position.x + PL / 2, ball.position.z + PW / 2];
       const d = Math.hypot(bt[0] - from[0], bt[1] - from[1]);
       const ground = last && ["carry", "dribble", "pressure", "ball_recovery", "tackle", "interception"].includes(last.type);
-      Object.assign(flight, { key, from, to: bt, t: flight.key ? 0 : 1, dur: Math.min(Math.max(d / 26, 0.25), 1.1),
+      Object.assign(flight, { key, from, to: bt, t: flight.key ? 0 : 1, dur: Math.min(Math.max(d / 26, 0.25), 1.1) * (replay ? 1.7 : 1),
         peak: ground ? 0 : d > 28 ? Math.min(d * 0.13, 7) : last && last.type === "shot" ? 0.8 : 0.15 });
       // Auto: every shot cuts to the camera behind the goal it is aimed at, so the finish is seen live
-      if (last && last.type === "shot" && flight.t === 0) {
+      if (!replay && last && last.type === "shot" && flight.t === 0) {
         const until = now + 4500;
         if (!cam.cut || cam.cut.until < until) cam.cut = { side: bt[0] > PL / 2 ? 1 : -1, until };
       }
@@ -303,14 +346,15 @@ export function createStadium(canvas, { live, drawLines }) {
     ball.position.set(bx, 0.32 + 4 * flight.peak * flight.t * (1 - flight.t), bz);
     ball.rotation.z -= dt * 6; ball.rotation.x += dt * 4;
 
-    if (s.trail !== trailRef) {
-      trailRef = s.trail;
+    const path = replay ? replay.trail : s.trail;
+    if (path !== trailRef) {
+      trailRef = path;
       trail.children.forEach(c => { c.geometry.dispose(); c.material.dispose(); });
       trail.clear();
-      s.trail.forEach((t, i) => {
+      path.forEach((t, i) => {
         if (!t.end) return;
         const g = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(X(t.start[0]), 0.06, Z(t.start[1])), new THREE.Vector3(X(t.end[0]), 0.06, Z(t.end[1]))]);
-        trail.add(new THREE.Line(g, new THREE.LineBasicMaterial({ color: colors[t.team] || "#ffffff", transparent: true, opacity: 0.15 + (0.5 * (i + 1)) / s.trail.length })));
+        trail.add(new THREE.Line(g, new THREE.LineBasicMaterial({ color: colors[t.team] || "#ffffff", transparent: true, opacity: 0.15 + (0.5 * (i + 1)) / path.length })));
       });
     }
 
@@ -338,11 +382,12 @@ export function createStadium(canvas, { live, drawLines }) {
         const attacking = top.team_id === s.meta.home.id ? 1 : -1;  // home attacks to the right
         cam.cut = { side: top.type === "great_save" ? -attacking : attacking,  // a save belongs to the keeper's team
                      until: now + (top.type === "goal" ? 8000 : 5000) };
+        if (top.type === "goal" && !replay) replayAt = { at: now + 2800, moment: top };
       }
     }
     if (cam.cut && now > cam.cut.until) cam.cut = null;
     if (Math.abs(bx) > 12) cam.side = Math.sign(bx);  // behind-the-goal view picks the end the ball is at
-    const mode = wanted === "auto" ? (cam.cut ? "goal" : "tv") : wanted;
+    const mode = wanted === "auto" ? (cam.cut ? "goal" : replay ? "replay" : "tv") : wanted;
     if (mode !== cam.mode) { cam.snap = cam.mode === null || wanted === "auto"; cam.mode = mode; }  // Auto cuts like TV; buttons glide
     const poss = last ? last.team : s.meta && s.meta.home.id;
     const want = shot(mode, bx, bz, poss, s);

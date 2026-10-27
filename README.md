@@ -3,6 +3,8 @@
 **Explainable, personalized match intelligence from live football events.**
 Built for *Inside the Game: Developer Hackathon* (Microsoft + Premier League), Oct 2026.
 
+**▶ Demo video (1:56): https://youtu.be/9_ml1Wf12QI** · **Live app: https://touchline-dfbaf4.azurewebsites.net**
+
 ## The end goal
 
 A web app where you press **Play** on a (synthetic) match and watch, in real time:
@@ -75,7 +77,7 @@ Keyless like the rest: the resource refuses connection-string writes, the app's 
 | 5b | **Ask the match**: a tool-using Q&A agent (fact-checked), and the same match tools served over **MCP** at `/mcp/` | ✅ done |
 | 5c | **Voice**: the commentator speaks each verified line (Azure AI Speech HD voices, EN/ES/FR/PT) | ✅ done |
 | 6 | **Deploy**: Event Hubs ingest, App Service with a managed identity (`scripts/deploy.sh`), architecture diagram. Live: https://touchline-dfbaf4.azurewebsites.net | ✅ done |
-| 7 | **Demo video** (< 2 min) + submission | ⏳ |
+| 7 | **Demo video** (< 2 min): https://youtu.be/9_ml1Wf12QI | ✅ done |
 
 Deadline: **Oct 27, 2026, 11:59 PM PT** (Oct 28, ~10:00 Israel).
 

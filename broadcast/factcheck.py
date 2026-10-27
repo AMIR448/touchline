@@ -19,6 +19,8 @@ ALWAYS_ALLOWED = {45.0, 90.0}  # "first 45 minutes", "the 90 minutes"
 # Two capitalised words in a row: how a person's name looks ("Theo Makuke"). Overlapping, so every pair is seen.
 NAME_PAIR = re.compile(r"(?=(?<![\w'’-])([A-ZÀ-Þ][a-zß-ÿ'’-]+)\s+([A-ZÀ-Þ][a-zß-ÿ'’-]+))")
 SCORELINE = re.compile(r"(?<![\d\-–])(\d{1,2})\s?[-–]\s?(\d{1,2})(?![\d\-–])")
+# "goal for …" in each language we write: English, Spanish, French, Portuguese.
+GOAL_FOR = r"\b(?:goal\s+for|gol\s+(?:de|del|para)|but\s+(?:de|du|pour)|golo?\s+(?:de|do|da|para))\s+(?:the\s+|el\s+|le\s+|o\s+)?"
 
 
 @dataclass
@@ -107,6 +109,20 @@ def invented_names(text: str, context_text: str) -> list[tuple[int, int, str]]:
     return out
 
 
+def wrong_scorer(text: str, contexts: list[Any]) -> str | None:
+    """In a goal moment, the team that did NOT score, if the text credits the goal to it
+    ("But pour Kestrel City" when Marlowe scored). Models slip into this when writing for the
+    conceding side's fans."""
+    for ctx in contexts:
+        moment, match = (ctx.get("moment"), ctx.get("match")) if isinstance(ctx, dict) else (None, None)
+        if not moment or moment.get("type") != "goal" or not match or not moment.get("team"):
+            continue
+        other = next((t for t in (match.get("home"), match.get("away")) if t and t != moment["team"]), None)
+        if other and re.search(GOAL_FOR + re.escape(other.split()[0]), text, re.IGNORECASE):
+            return other
+    return None
+
+
 def check(texts: list[str], contexts: list[Any], squad_names: Iterable[str] = (),
           headlines: Iterable[str] = ()) -> CheckResult:
     """`texts` are sentences; `headlines` get every check except invented names, since a headline
@@ -121,6 +137,8 @@ def check(texts: list[str], contexts: list[Any], squad_names: Iterable[str] = ()
         for _, a, b in _scorelines_in(text):
             if tuple(sorted((int(a), int(b)))) not in real_scores:
                 problems.append(f"the score {a}-{b} is not a score from this match")
+        if (wrong := wrong_scorer(text, contexts)):
+            problems.append(f"the goal was not scored by {wrong}; say who scored it")
         stray = NON_LATIN.findall(text)
         if stray:  # models occasionally leak letters from another alphabet ("Kestrел")
             problems.append(f"the text contains non-Latin characters ({''.join(sorted(set(stray)))[:10]}); use the target language's normal alphabet")

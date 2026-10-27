@@ -215,3 +215,13 @@ def test_rate_limiter_window():
     assert rl.allow("a") and rl.allow("a") and not rl.allow("a") and rl.allow("b")
     t[0] = 601
     assert rl.allow("a")
+
+
+def test_factcheck_rejects_crediting_the_goal_to_the_wrong_team():
+    ctx = {"moment": {"type": "goal", "team": "Marlowe United"},
+           "match": {"home": "Kestrel City", "away": "Marlowe United"}}
+    assert not check(["Felix Castell scored."], [ctx], headlines=["But pour Kestrel City tôt dans le match"]).ok
+    assert not check(["What a goal for Kestrel!"], [ctx]).ok
+    for ok in ["But de Felix Castell pour Marlowe", "Gol temprano de Marlowe United",
+               "Kestrel City trails after early Marlowe goal", "Port Ellis pierde tras build-up y gol de Marlowe"]:
+        assert check([], [ctx], headlines=[ok]).ok, ok
